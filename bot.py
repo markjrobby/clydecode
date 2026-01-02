@@ -219,12 +219,44 @@ def is_authorized(user_id: int) -> bool:
     return user_id in ALLOWED_USER_IDS
 
 
-async def run_claude(prompt: str, cwd: str, resume_id: str = None) -> tuple[str, str]:
+def format_tool_use(tool_name: str, tool_input: dict) -> str:
+    """Format tool use for display."""
+    if tool_name == "Read":
+        path = tool_input.get('file_path', '?')
+        return f"Reading: {path.split('/')[-1]}"
+    elif tool_name == "Write":
+        path = tool_input.get('file_path', '?')
+        return f"Writing: {path.split('/')[-1]}"
+    elif tool_name == "Edit":
+        path = tool_input.get('file_path', '?')
+        return f"Editing: {path.split('/')[-1]}"
+    elif tool_name == "Bash":
+        cmd = tool_input.get("command", "?")
+        if len(cmd) > 40:
+            cmd = cmd[:37] + "..."
+        return f"Running: {cmd}"
+    elif tool_name == "Glob":
+        return f"Searching: {tool_input.get('pattern', '?')}"
+    elif tool_name == "Grep":
+        return f"Grep: {tool_input.get('pattern', '?')}"
+    elif tool_name == "WebSearch":
+        return f"Searching web: {tool_input.get('query', '?')[:30]}"
+    elif tool_name == "WebFetch":
+        url = tool_input.get('url', '?')
+        return f"Fetching: {url[:40]}..."
+    elif tool_name == "Task":
+        return f"Task: {tool_input.get('description', '?')[:30]}"
+    else:
+        return f"{tool_name}"
+
+
+async def run_claude_streaming(prompt: str, cwd: str, status_message, resume_id: str = None):
     """
-    Run Claude Code CLI and return the response.
+    Run Claude Code CLI with streaming output.
+    Updates status_message with progress.
     Returns (response_text, session_id).
     """
-    cmd = ["claude", "-p", prompt, "--output-format", "text"]
+    cmd = ["claude", "-p", prompt, "--output-format", "stream-json"]
 
     if resume_id:
         cmd.extend(["--resume", resume_id])
@@ -239,27 +271,85 @@ async def run_claude(prompt: str, cwd: str, resume_id: str = None) -> tuple[str,
         env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
     )
 
+    full_response = ""
+    session_id = None
+    tool_uses = []
+    last_update = 0
+    git_info = get_git_info(cwd)
+
     try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(),
-            timeout=300  # 5 minute timeout
-        )
+        while True:
+            line = await asyncio.wait_for(
+                process.stdout.readline(),
+                timeout=300
+            )
+
+            if not line:
+                break
+
+            try:
+                data = json.loads(line.decode().strip())
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = data.get("type")
+
+            # Handle different message types
+            if msg_type == "assistant":
+                # Assistant text response
+                content = data.get("message", {}).get("content", [])
+                for block in content:
+                    if block.get("type") == "text":
+                        full_response = block.get("text", "")
+                    elif block.get("type") == "tool_use":
+                        tool_name = block.get("name", "")
+                        tool_input = block.get("input", {})
+                        tool_uses.append(format_tool_use(tool_name, tool_input))
+
+                        # Update status message with tool activity
+                        now = asyncio.get_event_loop().time()
+                        if now - last_update > 0.8:  # Throttle updates
+                            tools_display = "\n".join(f"→ {t}" for t in tool_uses[-5:])
+                            try:
+                                await status_message.edit_text(
+                                    f"<code>{cwd}</code> {git_info}\n\n{tools_display}",
+                                    parse_mode=ParseMode.HTML
+                                )
+                                last_update = now
+                            except Exception:
+                                pass
+
+            elif msg_type == "result":
+                # Final result
+                full_response = data.get("result", full_response)
+                session_id = data.get("session_id")
+
+            elif msg_type == "system":
+                # System message (initial context loading)
+                now = asyncio.get_event_loop().time()
+                if now - last_update > 1.0:
+                    try:
+                        await status_message.edit_text(
+                            f"<code>{cwd}</code> {git_info}\n\nLoading context...",
+                            parse_mode=ParseMode.HTML
+                        )
+                        last_update = now
+                    except Exception:
+                        pass
+
     except asyncio.TimeoutError:
         process.kill()
         return "Request timed out after 5 minutes.", None
 
+    await process.wait()
+
     if process.returncode != 0:
+        stderr = await process.stderr.read()
         error_msg = stderr.decode().strip() if stderr else "Unknown error"
         logger.error(f"Claude CLI error: {error_msg}")
         return f"Error: {error_msg[:500]}", None
 
-    response = stdout.decode().strip()
-
-    # Try to extract session ID from response for conversation continuity
-    # (The CLI might output it in a specific format - adjust as needed)
-    new_session_id = None
-
-    return response, new_session_id
+    return full_response, session_id
 
 
 # Command handlers
@@ -422,10 +512,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        # Run Claude Code CLI
-        response, new_session_id = await run_claude(
+        # Run Claude Code CLI with streaming
+        response, new_session_id = await run_claude_streaming(
             prompt=user_message,
             cwd=session.cwd,
+            status_message=status_message,
             resume_id=session.resume_id
         )
 
