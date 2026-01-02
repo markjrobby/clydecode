@@ -71,7 +71,7 @@ class Session:
             "autonomy": self.autonomy,
             "created_at": self.created_at,
             "last_message_id": self.last_message_id,
-            "conversation_history": self.conversation_history[-10],  # Keep last 10
+            "conversation_history": self.conversation_history[-10:],  # Keep last 10
         }
 
     @classmethod
