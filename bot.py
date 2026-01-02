@@ -333,7 +333,7 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
     heartbeat_task = asyncio.create_task(heartbeat())
 
     async def read_stderr():
-        """Read stderr in background."""
+        """Read stderr in background and log it."""
         try:
             while True:
                 line = await process.stderr.readline()
@@ -341,9 +341,9 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
                     break
                 line_str = line.decode().strip()
                 if line_str:
-                    logger.debug(f"stderr: {line_str}")
-        except Exception:
-            pass
+                    logger.warning(f"Claude stderr: {line_str}")
+        except Exception as e:
+            logger.error(f"stderr reader error: {e}")
 
     # Start stderr reader
     stderr_task = asyncio.create_task(read_stderr())
@@ -470,12 +470,16 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
         stderr_task.cancel()
 
     await process.wait()
+    logger.info(f"Claude process exited with code {process.returncode}")
 
     if process.returncode != 0:
         stderr = await process.stderr.read()
         error_msg = stderr.decode().strip() if stderr else "Unknown error"
-        logger.error(f"Claude CLI error: {error_msg}")
+        logger.error(f"Claude CLI error (exit {process.returncode}): {error_msg}")
         return f"Error: {error_msg[:500]}", None
+
+    if not full_response:
+        logger.warning("No response text captured from Claude")
 
     return full_response, session_id
 
