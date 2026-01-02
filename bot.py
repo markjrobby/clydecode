@@ -40,8 +40,12 @@ SESSIONS_FILE = os.path.expanduser(os.getenv("SESSIONS_FILE", "~/.telegram-claud
 # Logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.DEBUG
+    level=logging.INFO
 )
+# Silence noisy loggers
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Autonomy levels with their allowed tools
@@ -212,6 +216,51 @@ def truncate_message(text: str, max_length: int = 4000) -> str:
     if len(text) <= max_length:
         return text
     return text[:max_length - 20] + "\n\n[Truncated]"
+
+
+def redact_sensitive(text: str) -> str:
+    """Redact sensitive information from text before sending to Telegram."""
+    # Telegram bot tokens (format: 123456789:ABC-DEF...)
+    text = re.sub(r'\b\d{8,10}:[A-Za-z0-9_-]{35}\b', '[TELEGRAM_TOKEN_REDACTED]', text)
+
+    # Generic API keys/tokens (common patterns)
+    # AWS access keys
+    text = re.sub(r'\bAKIA[0-9A-Z]{16}\b', '[AWS_KEY_REDACTED]', text)
+    # AWS secret keys
+    text = re.sub(r'\b[A-Za-z0-9/+=]{40}\b(?=.*(?:aws|secret|key))', '[AWS_SECRET_REDACTED]', text, flags=re.IGNORECASE)
+
+    # GitHub tokens
+    text = re.sub(r'\bghp_[A-Za-z0-9]{36}\b', '[GITHUB_TOKEN_REDACTED]', text)
+    text = re.sub(r'\bgho_[A-Za-z0-9]{36}\b', '[GITHUB_TOKEN_REDACTED]', text)
+    text = re.sub(r'\bghu_[A-Za-z0-9]{36}\b', '[GITHUB_TOKEN_REDACTED]', text)
+    text = re.sub(r'\bghs_[A-Za-z0-9]{36}\b', '[GITHUB_TOKEN_REDACTED]', text)
+
+    # Anthropic API keys
+    text = re.sub(r'\bsk-ant-[A-Za-z0-9-]{40,}\b', '[ANTHROPIC_KEY_REDACTED]', text)
+
+    # OpenAI API keys
+    text = re.sub(r'\bsk-[A-Za-z0-9]{48}\b', '[OPENAI_KEY_REDACTED]', text)
+
+    # Generic secret patterns in .env style (KEY=value)
+    text = re.sub(
+        r'((?:API_KEY|SECRET|TOKEN|PASSWORD|PRIVATE_KEY|ACCESS_KEY)["\']?\s*[=:]\s*["\']?)([A-Za-z0-9_\-/+=]{16,})(["\']?)',
+        r'\1[REDACTED]\3',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # JWT tokens
+    text = re.sub(r'\beyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\b', '[JWT_REDACTED]', text)
+
+    # Database connection strings with passwords
+    text = re.sub(
+        r'((?:postgres|mysql|mongodb|redis)(?:ql)?://[^:]+:)([^@]+)(@)',
+        r'\1[PASSWORD_REDACTED]\3',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    return text
 
 
 def format_tool_use(tool_name: str, tool_input: dict) -> str:
@@ -543,7 +592,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_update = 0
 
         async for message in query(prompt=user_message, options=options):
-            logger.debug(f"Received message type: {type(message).__name__}")
 
             # Handle different message types
             if isinstance(message, AssistantMessage):
@@ -568,18 +616,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         except Exception:
                             pass
 
-            # Also check for text attribute directly on message
-            elif hasattr(message, 'text') and message.text:
-                full_response += message.text
-
-            # Check for content attribute that might contain text
-            elif hasattr(message, 'content'):
-                if isinstance(message.content, str):
-                    full_response += message.content
-                elif isinstance(message.content, list):
-                    for item in message.content:
-                        if hasattr(item, 'text'):
-                            full_response += item.text
+            # Handle ResultMessage (final response)
+            elif isinstance(message, ResultMessage):
+                if hasattr(message, 'result') and message.result:
+                    full_response = str(message.result)
+                elif hasattr(message, 'text') and message.text:
+                    full_response = str(message.text)
 
         # Delete status message
         try:
@@ -589,6 +631,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Send final response
         if full_response:
+            # Redact sensitive info before processing
+            full_response = redact_sensitive(full_response)
             response_html = markdown_to_html(full_response)
             response_html = truncate_message(response_html)
 
