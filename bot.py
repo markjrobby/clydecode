@@ -40,7 +40,7 @@ SESSIONS_FILE = os.path.expanduser(os.getenv("SESSIONS_FILE", "~/.telegram-claud
 # Logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    level=logging.DEBUG
 )
 logger = logging.getLogger(__name__)
 
@@ -543,6 +543,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_update = 0
 
         async for message in query(prompt=user_message, options=options):
+            logger.debug(f"Received message type: {type(message).__name__}")
+
+            # Handle different message types
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock):
@@ -552,19 +555,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         tool_uses.append(tool_info)
 
                         # Update status with tool usage (max 5 shown)
-                        if len(tool_uses) <= 5:
-                            tools_text = "\n".join(f"→ {t}" for t in tool_uses[-5:])
-                            try:
-                                # Throttle updates
-                                now = asyncio.get_event_loop().time()
-                                if now - last_update > 1.0:
-                                    await status_message.edit_text(
-                                        f"Working...\n\n{tools_text}",
-                                        parse_mode=ParseMode.HTML
-                                    )
-                                    last_update = now
-                            except Exception:
-                                pass
+                        tools_text = "\n".join(f"→ {t}" for t in tool_uses[-5:])
+                        try:
+                            # Throttle updates
+                            now = asyncio.get_event_loop().time()
+                            if now - last_update > 1.0:
+                                await status_message.edit_text(
+                                    f"Working...\n\n{tools_text}",
+                                    parse_mode=ParseMode.HTML
+                                )
+                                last_update = now
+                        except Exception:
+                            pass
+
+            # Also check for text attribute directly on message
+            elif hasattr(message, 'text') and message.text:
+                full_response += message.text
+
+            # Check for content attribute that might contain text
+            elif hasattr(message, 'content'):
+                if isinstance(message.content, str):
+                    full_response += message.content
+                elif isinstance(message.content, list):
+                    for item in message.content:
+                        if hasattr(item, 'text'):
+                            full_response += item.text
 
         # Delete status message
         try:
