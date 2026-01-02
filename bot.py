@@ -638,7 +638,7 @@ async def run_claude_streaming(
                     # Extract session_id from system message
                     session_id = data.get("session_id", session_id)
                     tool_uses.append("📂 Loading context...")
-                    await update_status("📂 Loading context...", force=True)
+                    # Heartbeat will pick up the change on next tick
 
     except asyncio.TimeoutError:
         stop_heartbeat[0] = True
