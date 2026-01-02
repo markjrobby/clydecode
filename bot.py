@@ -284,15 +284,8 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
     if resume_id:
         base_cmd.extend(["--resume", resume_id])
 
-    # Use 'script' command to force unbuffered output (works on Linux/Pi)
-    # This tricks the subprocess into thinking it's connected to a terminal
-    if shutil.which("script"):
-        # Linux version of script
-        cmd = ["script", "-q", "-c", " ".join(base_cmd), "/dev/null"]
-    else:
-        cmd = base_cmd
-
-    logger.info(f"Running Claude in {cwd}: {cmd[0]}...{base_cmd[1]}")
+    cmd = base_cmd
+    logger.info(f"Running Claude in {cwd}")
 
     env = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
 
@@ -371,6 +364,7 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
                 break
 
             buffer += chunk.decode()
+            logger.info(f"Received chunk: {len(chunk)} bytes, buffer now {len(buffer)} bytes")
 
             # Process complete lines
             while "\n" in buffer:
@@ -382,8 +376,9 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
 
                 try:
                     data = json.loads(line_str)
+                    logger.info(f"Parsed JSON type: {data.get('type')}")
                 except json.JSONDecodeError:
-                    logger.debug(f"Non-JSON line: {line_str[:100]}")
+                    logger.warning(f"Non-JSON line: {line_str[:100]}")
                     continue
 
                 msg_type = data.get("type")
