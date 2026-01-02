@@ -276,8 +276,8 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
     Updates status_message with progress.
     Returns (response_text, session_id).
     """
-    # Use allowedTools to let Claude work, edits will be shown as diffs
-    cmd = ["claude", "-p", prompt, "--output-format", "stream-json"]
+    # Use stream-json for real-time updates
+    cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
 
     if resume_id:
         cmd.extend(["--resume", resume_id])
@@ -300,6 +300,20 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
     git_info = get_git_info(cwd)
     edits_made = []  # Track edits for summary
 
+    async def update_status(text: str, force: bool = False):
+        """Update the status message with throttling."""
+        nonlocal last_update
+        now = asyncio.get_event_loop().time()
+        if force or now - last_update > 0.5:
+            try:
+                await status_message.edit_text(
+                    f"<code>{cwd}</code> {git_info}\n\n{text}",
+                    parse_mode=ParseMode.HTML
+                )
+                last_update = now
+            except Exception:
+                pass
+
     try:
         while True:
             line = await asyncio.wait_for(
@@ -310,9 +324,18 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
             if not line:
                 break
 
+            line_str = line.decode().strip()
+            if not line_str:
+                continue
+
             try:
-                data = json.loads(line.decode().strip())
+                data = json.loads(line_str)
             except json.JSONDecodeError:
+                # Could be verbose output, show it
+                if line_str and not line_str.startswith('{'):
+                    tool_uses.append(line_str[:50])
+                    tools_display = "\n".join(f"→ {t}" for t in tool_uses[-5:])
+                    await update_status(tools_display)
                 continue
 
             msg_type = data.get("type")
@@ -327,7 +350,12 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
                     elif block.get("type") == "tool_use":
                         tool_name = block.get("name", "")
                         tool_input = block.get("input", {})
-                        tool_uses.append(format_tool_use(tool_name, tool_input))
+                        tool_display = format_tool_use(tool_name, tool_input)
+                        tool_uses.append(tool_display)
+
+                        # Update status immediately for each tool
+                        tools_display = "\n".join(f"→ {t}" for t in tool_uses[-5:])
+                        await update_status(tools_display, force=True)
 
                         # Show diff for Edit operations
                         if tool_name == "Edit" and tool_input.get("old_string") and tool_input.get("new_string"):
@@ -338,7 +366,6 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
                             )
                             edits_made.append(tool_input.get("file_path", "unknown").split("/")[-1])
 
-                            # Send diff as a separate message
                             try:
                                 await context.bot.send_message(
                                     chat_id=chat_id,
@@ -365,41 +392,26 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
                             except Exception as e:
                                 logger.error(f"Failed to send write preview: {e}")
 
-                        # Update status message with tool activity
-                        now = asyncio.get_event_loop().time()
-                        if now - last_update > 0.8:  # Throttle updates
-                            tools_display = "\n".join(f"→ {t}" for t in tool_uses[-5:])
-                            try:
-                                await status_message.edit_text(
-                                    f"<code>{cwd}</code> {git_info}\n\n{tools_display}",
-                                    parse_mode=ParseMode.HTML
-                                )
-                                last_update = now
-                            except Exception:
-                                pass
+            elif msg_type == "user":
+                # Tool results - show brief status
+                content = data.get("message", {}).get("content", [])
+                for block in content:
+                    if block.get("type") == "tool_result":
+                        tool_uses.append("✓ Done")
+                        tools_display = "\n".join(f"→ {t}" for t in tool_uses[-5:])
+                        await update_status(tools_display)
 
             elif msg_type == "result":
                 # Final result
                 full_response = data.get("result", full_response)
                 session_id = data.get("session_id")
 
-                # Add edit summary to response if edits were made
                 if edits_made:
                     files_summary = ", ".join(set(edits_made))
                     full_response = f"✅ <b>Files modified:</b> {files_summary}\n\n{full_response}"
 
             elif msg_type == "system":
-                # System message (initial context loading)
-                now = asyncio.get_event_loop().time()
-                if now - last_update > 1.0:
-                    try:
-                        await status_message.edit_text(
-                            f"<code>{cwd}</code> {git_info}\n\nLoading context...",
-                            parse_mode=ParseMode.HTML
-                        )
-                        last_update = now
-                    except Exception:
-                        pass
+                await update_status("Loading context...")
 
     except asyncio.TimeoutError:
         process.kill()
