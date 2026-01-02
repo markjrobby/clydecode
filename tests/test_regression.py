@@ -70,11 +70,12 @@ class TestSecurityRegressions:
     def test_path_traversal_in_diff_display(self):
         """Ensure path traversal doesn't affect display."""
         # Malicious path shouldn't cause issues
-        result = bot.format_diff(
+        pages = bot.format_diff(
             "old",
             "new",
             "../../../etc/passwd"
         )
+        result = pages[0]
         assert "passwd" in result  # Filename extraction works
         assert "../../../etc/" not in result  # Path not fully shown
 
@@ -115,8 +116,9 @@ class TestEdgeCases:
         ]
 
         for path in special_paths:
-            result = bot.format_diff("old", "new", path)
-            assert result is not None
+            pages = bot.format_diff("old", "new", path)
+            assert pages is not None
+            assert len(pages) >= 1
 
     def test_null_bytes_in_content(self):
         """Ensure null bytes don't cause issues."""
@@ -187,8 +189,9 @@ class TestApprovalRegressions:
         approval_msg.message_id = 12345
         mock_context.bot.send_message = AsyncMock(return_value=approval_msg)
 
-        msg_id = await bot.show_approval_request(12345, mock_context, edit_info)
+        msg_id, pages = await bot.show_approval_request(12345, mock_context, edit_info)
         assert msg_id == 12345
+        assert isinstance(pages, list)
 
     async def test_reject_kills_process(self, mock_callback_query, mock_context, sample_pending_edit):
         """Ensure reject properly kills the Claude process."""
@@ -343,7 +346,8 @@ class TestDiffFormattingRegressions:
         old_code = "<div>old</div>"
         new_code = "<div>new</div>"
 
-        result = bot.format_diff(old_code, new_code, "/file.html")
+        pages = bot.format_diff(old_code, new_code, "/file.html")
+        result = pages[0]
 
         assert "<div>" not in result
         assert "&lt;div&gt;" in result
@@ -353,24 +357,27 @@ class TestDiffFormattingRegressions:
         old_code = "x" * 1000
         new_code = "y" * 1000
 
-        result = bot.format_diff(old_code, new_code, "/file.py")
-        assert result is not None
+        pages = bot.format_diff(old_code, new_code, "/file.py")
+        assert pages is not None
+        assert len(pages) >= 1
 
     def test_diff_with_many_lines(self):
-        """Ensure many lines are handled."""
+        """Ensure many lines are paged, not truncated."""
         old_code = "\n".join(f"line {i}" for i in range(500))
         new_code = "\n".join(f"new line {i}" for i in range(500))
 
-        result = bot.format_diff(old_code, new_code, "/file.py")
-        assert result is not None
-        assert "truncated" in result.lower()
+        pages = bot.format_diff(old_code, new_code, "/file.py")
+        assert pages is not None
+        # With pagination, should have multiple pages instead of truncating
+        assert len(pages) > 1
 
     def test_diff_shows_removed_and_added(self):
         """Ensure diff shows removed and added lines clearly."""
         old_code = "old line"
         new_code = "new line"
 
-        result = bot.format_diff(old_code, new_code, "/file.py")
+        pages = bot.format_diff(old_code, new_code, "/file.py")
+        result = pages[0]
         # Should have emoji markers
         assert "🟥 old line" in result
         assert "🟩 new line" in result

@@ -89,6 +89,8 @@ class PendingEdit:
     process: asyncio.subprocess.Process
     session_id: Optional[str]
     cwd: str
+    pages: list[str] = field(default_factory=list)  # Diff pages for pagination
+    current_page: int = 0
     created_at: datetime = field(default_factory=datetime.now)
 
 
@@ -273,8 +275,8 @@ def format_tool_use(tool_name: str, tool_input: dict) -> str:
         return f"{tool_name}"
 
 
-def format_diff(old_string: str, new_string: str, file_path: str) -> str:
-    """Format a clean diff showing removed and added lines with line numbers."""
+def format_diff(old_string: str, new_string: str, file_path: str) -> list[str]:
+    """Format a diff with line numbers, returning list of pages for pagination."""
     filename = file_path.split('/')[-1]
 
     old_lines = old_string.splitlines()
@@ -282,7 +284,7 @@ def format_diff(old_string: str, new_string: str, file_path: str) -> str:
 
     # If the strings are identical, no changes
     if old_string == new_string:
-        return f"<b>📄 {filename}</b>\n\n<i>No changes</i>"
+        return [f"<b>📄 {filename}</b>\n\n<i>No changes</i>"]
 
     # Try to find line number in actual file
     start_line = None
@@ -322,34 +324,74 @@ def format_diff(old_string: str, new_string: str, file_path: str) -> str:
                 formatted_lines.append(f"🟩 {line}")
 
     diff_content = '\n'.join(formatted_lines)
+    header = f"<b>📄 {filename}</b>\n\n"
 
-    # Truncate if too long for Telegram
-    max_len = 2500
-    if len(diff_content) > max_len:
-        diff_content = diff_content[:max_len] + "\n\n... (truncated)"
+    # Split into pages if too long for Telegram (max ~4000 chars safe)
+    max_content_len = 3500
+    pages = []
 
-    diff_text = f"<b>📄 {filename}</b>\n\n"
-    diff_text += f"<code>{html.escape(diff_content)}</code>"
+    if len(diff_content) <= max_content_len:
+        pages.append(header + f"<code>{html.escape(diff_content)}</code>")
+    else:
+        # Split by lines to avoid cutting mid-line
+        lines = formatted_lines
+        current_page = []
+        current_len = 0
 
-    return diff_text
+        for line in lines:
+            line_len = len(line) + 1  # +1 for newline
+            if current_len + line_len > max_content_len and current_page:
+                page_content = '\n'.join(current_page)
+                pages.append(header + f"<code>{html.escape(page_content)}</code>")
+                current_page = [line]
+                current_len = line_len
+            else:
+                current_page.append(line)
+                current_len += line_len
+
+        # Add remaining lines as last page
+        if current_page:
+            page_content = '\n'.join(current_page)
+            pages.append(header + f"<code>{html.escape(page_content)}</code>")
+
+    return pages
 
 
-def format_new_file(content: str, file_path: str) -> str:
-    """Format new file preview."""
+def format_new_file(content: str, file_path: str) -> list[str]:
+    """Format new file preview, returning list of pages for pagination."""
     filename = file_path.split('/')[-1]
 
-    max_len = 2500
-    display = content[:max_len]
-    if len(content) > max_len:
-        display += "\n\n... (truncated)"
+    lines = content.splitlines()
+    formatted_lines = [f"{str(i+1).rjust(4)} 🟩 {line}" for i, line in enumerate(lines)]
 
-    lines = display.split('\n')
-    formatted = '\n'.join(f"🟩 {line}" for line in lines)
+    header = f"<b>📄 {filename}</b> (new file)\n\n"
+    max_content_len = 3500
+    pages = []
 
-    text = f"<b>📄 {filename}</b> (new file)\n\n"
-    text += f"<code>{html.escape(formatted)}</code>"
+    diff_content = '\n'.join(formatted_lines)
 
-    return text
+    if len(diff_content) <= max_content_len:
+        pages.append(header + f"<code>{html.escape(diff_content)}</code>")
+    else:
+        current_page = []
+        current_len = 0
+
+        for line in formatted_lines:
+            line_len = len(line) + 1
+            if current_len + line_len > max_content_len and current_page:
+                page_content = '\n'.join(current_page)
+                pages.append(header + f"<code>{html.escape(page_content)}</code>")
+                current_page = [line]
+                current_len = line_len
+            else:
+                current_page.append(line)
+                current_len += line_len
+
+        if current_page:
+            page_content = '\n'.join(current_page)
+            pages.append(header + f"<code>{html.escape(page_content)}</code>")
+
+    return pages
 
 
 async def run_claude_streaming(
@@ -715,40 +757,55 @@ async def cmd_git(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Error: {e}")
 
 
-async def show_approval_request(chat_id: int, context, edit_info: dict) -> int:
-    """Show diff with approval buttons. Returns the message ID."""
+async def show_approval_request(chat_id: int, context, edit_info: dict, page: int = 0) -> tuple[int, list[str]]:
+    """Show diff with approval buttons. Returns (message_id, pages)."""
     edit_id = edit_info["edit_id"]
 
-    # Format diff
+    # Format diff into pages
     if edit_info["tool_name"] == "Edit":
-        diff_text = format_diff(
+        pages = format_diff(
             edit_info["old_string"],
             edit_info["new_string"],
             edit_info["file_path"]
         )
         btn_approve, btn_reject = "✅ Approve", "❌ Reject"
     else:
-        diff_text = format_new_file(
+        pages = format_new_file(
             edit_info["new_string"],
             edit_info["file_path"]
         )
         btn_approve, btn_reject = "✅ Create", "❌ Cancel"
 
-    # Create buttons
-    keyboard = InlineKeyboardMarkup([[
+    # Build keyboard with pagination if needed
+    buttons = []
+
+    # Add pagination buttons if multiple pages
+    if len(pages) > 1:
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{edit_id}_{page-1}"))
+        nav_buttons.append(InlineKeyboardButton(f"{page+1}/{len(pages)}", callback_data="noop"))
+        if page < len(pages) - 1:
+            nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{edit_id}_{page+1}"))
+        buttons.append(nav_buttons)
+
+    # Add approve/reject buttons
+    buttons.append([
         InlineKeyboardButton(btn_approve, callback_data=f"approve_{edit_id}"),
         InlineKeyboardButton(btn_reject, callback_data=f"reject_{edit_id}")
-    ]])
+    ])
+
+    keyboard = InlineKeyboardMarkup(buttons)
 
     # Send diff with buttons
     msg = await context.bot.send_message(
         chat_id=chat_id,
-        text=diff_text,
+        text=pages[page],
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard
     )
 
-    return msg.message_id
+    return msg.message_id, pages
 
 
 async def continue_after_approval(pending: PendingEdit, context) -> dict:
@@ -843,7 +900,7 @@ async def handle_approve(query, pending: PendingEdit, context):
 
     if result["status"] == "pending_approval":
         # Another edit needs approval
-        msg_id = await show_approval_request(pending.chat_id, context, result)
+        msg_id, pages = await show_approval_request(pending.chat_id, context, result)
 
         pending_edits[result["edit_id"]] = PendingEdit(
             edit_id=result["edit_id"],
@@ -857,6 +914,7 @@ async def handle_approve(query, pending: PendingEdit, context):
             process=result["process"],
             session_id=result["session_id"],
             cwd=pending.cwd,
+            pages=pages,
         )
 
     elif result["status"] == "complete":
@@ -905,11 +963,62 @@ async def handle_reject(query, pending: PendingEdit, context):
 
 
 async def handle_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle approve/reject button callbacks."""
+    """Handle approve/reject/pagination button callbacks."""
     query = update.callback_query
     await query.answer()
 
-    data = query.data  # "approve_abc123" or "reject_abc123"
+    data = query.data
+
+    # Handle noop (page counter button)
+    if data == "noop":
+        return
+
+    # Handle pagination
+    if data.startswith("page_"):
+        parts = data.split("_")
+        edit_id = parts[1]
+        new_page = int(parts[2])
+
+        if edit_id not in pending_edits:
+            await query.edit_message_text("⚠️ This edit has expired.")
+            return
+
+        pending = pending_edits[edit_id]
+
+        # Verify user
+        if query.from_user.id != pending.user_id:
+            await query.answer("Only the requester can navigate.", show_alert=True)
+            return
+
+        # Update current page
+        pending.current_page = new_page
+
+        # Build new keyboard
+        buttons = []
+        if len(pending.pages) > 1:
+            nav_buttons = []
+            if new_page > 0:
+                nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{edit_id}_{new_page-1}"))
+            nav_buttons.append(InlineKeyboardButton(f"{new_page+1}/{len(pending.pages)}", callback_data="noop"))
+            if new_page < len(pending.pages) - 1:
+                nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{edit_id}_{new_page+1}"))
+            buttons.append(nav_buttons)
+
+        btn_approve = "✅ Approve" if pending.tool_name == "Edit" else "✅ Create"
+        btn_reject = "❌ Reject" if pending.tool_name == "Edit" else "❌ Cancel"
+        buttons.append([
+            InlineKeyboardButton(btn_approve, callback_data=f"approve_{edit_id}"),
+            InlineKeyboardButton(btn_reject, callback_data=f"reject_{edit_id}")
+        ])
+
+        await query.edit_message_text(
+            text=pending.pages[new_page],
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+
+    # Handle approve/reject
     action, edit_id = data.split("_", 1)
 
     if edit_id not in pending_edits:
@@ -976,7 +1085,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
 
             # Show approval request
-            msg_id = await show_approval_request(
+            msg_id, pages = await show_approval_request(
                 update.effective_chat.id,
                 context,
                 result
@@ -995,6 +1104,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 process=result["process"],
                 session_id=result["session_id"],
                 cwd=session.cwd,
+                pages=pages,
             )
 
         elif result["status"] == "complete":

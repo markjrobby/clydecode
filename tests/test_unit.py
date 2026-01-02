@@ -197,44 +197,51 @@ class TestFormatDiff:
     """Tests for format_diff function."""
 
     def test_formats_basic_diff(self):
-        result = bot.format_diff("old code", "new code", "/nonexistent/file.py")
+        pages = bot.format_diff("old code", "new code", "/nonexistent/file.py")
+        assert isinstance(pages, list)
+        assert len(pages) >= 1
+        result = pages[0]
         assert "file.py" in result
         # Should show removed and added lines with emoji (no line numbers for nonexistent file)
         assert "🟥 old code" in result
         assert "🟩 new code" in result
 
     def test_includes_filename(self):
-        result = bot.format_diff("old", "new", "/path/to/myfile.py")
-        assert "myfile.py" in result
+        pages = bot.format_diff("old", "new", "/path/to/myfile.py")
+        assert "myfile.py" in pages[0]
 
     def test_multiline_diff(self):
         old_code = "line1\nline2\nline3"
         new_code = "line1\nmodified\nline3"
-        result = bot.format_diff(old_code, new_code, "/nonexistent/file.py")
+        pages = bot.format_diff(old_code, new_code, "/nonexistent/file.py")
+        result = pages[0]
         assert "🟥 line1" in result
         assert "🟩 line1" in result
 
-    def test_truncates_long_content(self):
-        old_content = "\n".join(f"line {i}" for i in range(500))
-        new_content = "\n".join(f"new line {i}" for i in range(500))
-        result = bot.format_diff(old_content, new_content, "/file.py")
-        assert "truncated" in result.lower()
+    def test_paginates_long_content(self):
+        old_content = "\n".join(f"line {i} with some extra text to make it longer" for i in range(200))
+        new_content = "\n".join(f"new line {i} with some extra text to make it longer" for i in range(200))
+        pages = bot.format_diff(old_content, new_content, "/file.py")
+        # Should have multiple pages for long content
+        assert len(pages) > 1
 
     def test_escapes_html(self):
-        result = bot.format_diff("<script>", "</script>", "/file.py")
+        pages = bot.format_diff("<script>", "</script>", "/file.py")
+        result = pages[0]
         assert "<script>" not in result
         assert "&lt;script&gt;" in result
 
     def test_no_changes_shows_message(self):
-        result = bot.format_diff("same content", "same content", "/file.py")
-        assert "No changes" in result
+        pages = bot.format_diff("same content", "same content", "/file.py")
+        assert "No changes" in pages[0]
 
     def test_shows_line_numbers_for_existing_file(self, temp_cwd):
         # Create a test file
         test_file = Path(temp_cwd) / "test.py"
         test_file.write_text("line1\nline2\nold_content\nline4\nline5")
 
-        result = bot.format_diff("old_content", "new_content", str(test_file))
+        pages = bot.format_diff("old_content", "new_content", str(test_file))
+        result = pages[0]
         # Should show line number 3 (where old_content is)
         assert "3" in result
         assert "🟥 old_content" in result
@@ -245,18 +252,23 @@ class TestFormatNewFile:
     """Tests for format_new_file function."""
 
     def test_formats_new_file(self):
-        result = bot.format_new_file("print('hello')", "/path/to/new.py")
+        pages = bot.format_new_file("print('hello')", "/path/to/new.py")
+        assert isinstance(pages, list)
+        assert len(pages) >= 1
+        result = pages[0]
         assert "new.py" in result
         assert "(new file)" in result
         assert "🟩 print" in result
 
-    def test_truncates_long_content(self):
-        content = "\n".join(f"line {i}" for i in range(500))
-        result = bot.format_new_file(content, "/file.py")
-        assert "truncated" in result.lower()
+    def test_paginates_long_content(self):
+        content = "\n".join(f"line {i} with extra text to make it longer" for i in range(200))
+        pages = bot.format_new_file(content, "/file.py")
+        # Should have multiple pages for long content
+        assert len(pages) > 1
 
     def test_escapes_html(self):
-        result = bot.format_new_file("<script>alert('xss')</script>", "/file.py")
+        pages = bot.format_new_file("<script>alert('xss')</script>", "/file.py")
+        result = pages[0]
         assert "<script>" not in result
         assert "&lt;script&gt;" in result
 

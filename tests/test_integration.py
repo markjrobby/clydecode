@@ -141,9 +141,11 @@ class TestApprovalWorkflow:
         approval_msg.message_id = 12345
         mock_context.bot.send_message = AsyncMock(return_value=approval_msg)
 
-        msg_id = await bot.show_approval_request(12345, mock_context, edit_info)
+        msg_id, pages = await bot.show_approval_request(12345, mock_context, edit_info)
 
         assert msg_id == 12345
+        assert isinstance(pages, list)
+        assert len(pages) >= 1
         call_kwargs = mock_context.bot.send_message.call_args[1]
         assert "Approve" in str(call_kwargs['reply_markup'])
         assert "Reject" in str(call_kwargs['reply_markup'])
@@ -162,8 +164,10 @@ class TestApprovalWorkflow:
         approval_msg.message_id = 12345
         mock_context.bot.send_message = AsyncMock(return_value=approval_msg)
 
-        msg_id = await bot.show_approval_request(12345, mock_context, edit_info)
+        msg_id, pages = await bot.show_approval_request(12345, mock_context, edit_info)
 
+        assert msg_id == 12345
+        assert isinstance(pages, list)
         call_kwargs = mock_context.bot.send_message.call_args[1]
         assert "Create" in str(call_kwargs['reply_markup'])
         assert "Cancel" in str(call_kwargs['reply_markup'])
