@@ -17,11 +17,12 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -122,6 +123,9 @@ class SessionManager:
 
 
 sessions = SessionManager(SESSIONS_FILE)
+
+# Pending permission requests: {callback_id: {process, prompt_data, chat_id, ...}}
+pending_permissions: dict[str, dict] = {}
 
 
 def redact_sensitive(text: str) -> str:
@@ -250,12 +254,29 @@ def format_tool_use(tool_name: str, tool_input: dict) -> str:
         return f"{tool_name}"
 
 
-async def run_claude_streaming(prompt: str, cwd: str, status_message, resume_id: str = None):
+def format_diff(old_string: str, new_string: str, file_path: str) -> str:
+    """Format a simple diff for display."""
+    filename = file_path.split('/')[-1]
+
+    # Truncate if too long
+    max_len = 800
+    old_display = old_string[:max_len] + "..." if len(old_string) > max_len else old_string
+    new_display = new_string[:max_len] + "..." if len(new_string) > max_len else new_string
+
+    diff_text = f"<b>File:</b> {filename}\n\n"
+    diff_text += f"<b>- Remove:</b>\n<pre>{html.escape(old_display)}</pre>\n\n"
+    diff_text += f"<b>+ Add:</b>\n<pre>{html.escape(new_display)}</pre>"
+
+    return diff_text
+
+
+async def run_claude_streaming(prompt: str, cwd: str, status_message, context, chat_id: int, resume_id: str = None):
     """
     Run Claude Code CLI with streaming output.
     Updates status_message with progress.
     Returns (response_text, session_id).
     """
+    # Use allowedTools to let Claude work, edits will be shown as diffs
     cmd = ["claude", "-p", prompt, "--output-format", "stream-json"]
 
     if resume_id:
@@ -268,6 +289,7 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, resume_id:
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        stdin=asyncio.subprocess.PIPE,
         env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
     )
 
@@ -276,6 +298,7 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, resume_id:
     tool_uses = []
     last_update = 0
     git_info = get_git_info(cwd)
+    edits_made = []  # Track edits for summary
 
     try:
         while True:
@@ -306,6 +329,42 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, resume_id:
                         tool_input = block.get("input", {})
                         tool_uses.append(format_tool_use(tool_name, tool_input))
 
+                        # Show diff for Edit operations
+                        if tool_name == "Edit" and tool_input.get("old_string") and tool_input.get("new_string"):
+                            diff_display = format_diff(
+                                tool_input.get("old_string", ""),
+                                tool_input.get("new_string", ""),
+                                tool_input.get("file_path", "unknown")
+                            )
+                            edits_made.append(tool_input.get("file_path", "unknown").split("/")[-1])
+
+                            # Send diff as a separate message
+                            try:
+                                await context.bot.send_message(
+                                    chat_id=chat_id,
+                                    text=f"📝 <b>Edit:</b>\n\n{diff_display}",
+                                    parse_mode=ParseMode.HTML
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to send diff: {e}")
+
+                        # Show diff for Write operations (new files)
+                        elif tool_name == "Write" and tool_input.get("content"):
+                            file_path = tool_input.get("file_path", "unknown")
+                            content_preview = tool_input.get("content", "")[:1000]
+                            if len(tool_input.get("content", "")) > 1000:
+                                content_preview += "..."
+                            edits_made.append(file_path.split("/")[-1])
+
+                            try:
+                                await context.bot.send_message(
+                                    chat_id=chat_id,
+                                    text=f"📄 <b>New File:</b> {file_path.split('/')[-1]}\n\n<pre>{html.escape(content_preview)}</pre>",
+                                    parse_mode=ParseMode.HTML
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to send write preview: {e}")
+
                         # Update status message with tool activity
                         now = asyncio.get_event_loop().time()
                         if now - last_update > 0.8:  # Throttle updates
@@ -323,6 +382,11 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, resume_id:
                 # Final result
                 full_response = data.get("result", full_response)
                 session_id = data.get("session_id")
+
+                # Add edit summary to response if edits were made
+                if edits_made:
+                    files_summary = ", ".join(set(edits_made))
+                    full_response = f"✅ <b>Files modified:</b> {files_summary}\n\n{full_response}"
 
             elif msg_type == "system":
                 # System message (initial context loading)
@@ -517,6 +581,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prompt=user_message,
             cwd=session.cwd,
             status_message=status_message,
+            context=context,
+            chat_id=update.effective_chat.id,
             resume_id=session.resume_id
         )
 
