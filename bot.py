@@ -437,13 +437,14 @@ async def run_claude_streaming(
     """
     # Use stream-json for real-time updates
     # --verbose is REQUIRED when using stream-json with -p
-    # Auto-allow all tools - we show diffs to user but don't block Claude
-    # This provides visibility without blocking the workflow
+    # --permission-mode acceptEdits auto-accepts file edits
+    # --allowedTools pre-approves specific tools
     base_cmd = [
         "claude", "-p", prompt,
         "--output-format", "stream-json",
         "--verbose",
-        "--allowedTools", "Edit,Write,Read,Glob,Grep,Bash,WebSearch,WebFetch,Task,TodoWrite,NotebookEdit"
+        "--permission-mode", "acceptEdits",
+        "--allowedTools", "Edit", "Write", "Read", "Glob", "Grep", "Bash", "WebSearch", "WebFetch", "Task", "TodoWrite", "NotebookEdit"
     ]
 
     if resume_id:
