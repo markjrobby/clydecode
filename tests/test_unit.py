@@ -160,37 +160,37 @@ class TestFormatToolUse:
 
     def test_format_read(self):
         result = bot.format_tool_use("Read", {"file_path": "/path/to/file.py"})
-        assert "Reading: file.py" == result
+        assert "📖 Read(file.py)" == result
 
     def test_format_edit(self):
         result = bot.format_tool_use("Edit", {"file_path": "/path/to/file.py"})
-        assert "Editing: file.py" == result
+        assert "✏️ Update(file.py)" == result
 
     def test_format_write(self):
         result = bot.format_tool_use("Write", {"file_path": "/path/to/new.py"})
-        assert "Writing: new.py" == result
+        assert "📝 Write(new.py)" == result
 
     def test_format_bash_short_command(self):
         result = bot.format_tool_use("Bash", {"command": "ls -la"})
-        assert "Running: ls -la" == result
+        assert "💻 Bash: ls -la" == result
 
     def test_format_bash_long_command_truncated(self):
         long_cmd = "a" * 50
         result = bot.format_tool_use("Bash", {"command": long_cmd})
-        assert len(result) < 50
+        assert len(result) < 55  # emoji + "Bash: " + truncated command
         assert "..." in result
 
     def test_format_glob(self):
         result = bot.format_tool_use("Glob", {"pattern": "**/*.py"})
-        assert "Searching: **/*.py" == result
+        assert "🔍 Glob(**/*.py)" == result
 
     def test_format_grep(self):
         result = bot.format_tool_use("Grep", {"pattern": "TODO"})
-        assert "Grep: TODO" == result
+        assert "🔎 Grep(TODO)" == result
 
     def test_format_unknown_tool(self):
         result = bot.format_tool_use("UnknownTool", {})
-        assert result == "UnknownTool"
+        assert "🔧 UnknownTool" == result
 
 
 class TestFormatDiff:

@@ -245,34 +245,57 @@ def is_authorized(user_id: int) -> bool:
 
 
 def format_tool_use(tool_name: str, tool_input: dict) -> str:
-    """Format tool use for display."""
+    """Format tool use for display, matching Claude Code CLI style."""
     if tool_name == "Read":
         path = tool_input.get('file_path', '?')
-        return f"Reading: {path.split('/')[-1]}"
+        filename = path.split('/')[-1]
+        return f"📖 Read({filename})"
     elif tool_name == "Write":
         path = tool_input.get('file_path', '?')
-        return f"Writing: {path.split('/')[-1]}"
+        filename = path.split('/')[-1]
+        return f"📝 Write({filename})"
     elif tool_name == "Edit":
         path = tool_input.get('file_path', '?')
-        return f"Editing: {path.split('/')[-1]}"
+        filename = path.split('/')[-1]
+        return f"✏️ Update({filename})"
     elif tool_name == "Bash":
         cmd = tool_input.get("command", "?")
-        if len(cmd) > 40:
-            cmd = cmd[:37] + "..."
-        return f"Running: {cmd}"
+        if len(cmd) > 35:
+            cmd = cmd[:32] + "..."
+        return f"💻 Bash: {cmd}"
     elif tool_name == "Glob":
-        return f"Searching: {tool_input.get('pattern', '?')}"
+        pattern = tool_input.get('pattern', '?')
+        return f"🔍 Glob({pattern})"
     elif tool_name == "Grep":
-        return f"Grep: {tool_input.get('pattern', '?')}"
+        pattern = tool_input.get('pattern', '?')
+        if len(pattern) > 20:
+            pattern = pattern[:17] + "..."
+        return f"🔎 Grep({pattern})"
     elif tool_name == "WebSearch":
-        return f"Searching web: {tool_input.get('query', '?')[:30]}"
+        query = tool_input.get('query', '?')
+        if len(query) > 25:
+            query = query[:22] + "..."
+        return f"🌐 WebSearch: {query}"
     elif tool_name == "WebFetch":
         url = tool_input.get('url', '?')
-        return f"Fetching: {url[:40]}..."
+        # Extract domain from URL
+        try:
+            from urllib.parse import urlparse
+            domain = urlparse(url).netloc
+            return f"🌐 Fetch({domain})"
+        except:
+            return f"🌐 Fetch(url)"
     elif tool_name == "Task":
-        return f"Task: {tool_input.get('description', '?')[:30]}"
+        desc = tool_input.get('description', '?')
+        if len(desc) > 25:
+            desc = desc[:22] + "..."
+        return f"🚀 Task: {desc}"
+    elif tool_name == "TodoWrite":
+        return "📋 TodoWrite"
+    elif tool_name == "AskUserQuestion":
+        return "❓ AskUserQuestion"
     else:
-        return f"{tool_name}"
+        return f"🔧 {tool_name}"
 
 
 def format_diff(old_string: str, new_string: str, file_path: str) -> list[str]:
@@ -520,18 +543,30 @@ async def run_claude_streaming(
                 if msg_type == "assistant":
                     # Assistant text response
                     content = data.get("message", {}).get("content", [])
+                    current_action = ""
                     for block in content:
                         if block.get("type") == "text":
                             full_response = block.get("text", "")
+                            # Extract first line as current action (like Claude CLI does)
+                            text = block.get("text", "").strip()
+                            if text:
+                                first_line = text.split('\n')[0].strip()
+                                if len(first_line) > 60:
+                                    first_line = first_line[:57] + "..."
+                                current_action = f"● {first_line}"
                         elif block.get("type") == "tool_use":
                             tool_name = block.get("name", "")
                             tool_input = block.get("input", {})
                             tool_display = format_tool_use(tool_name, tool_input)
                             tool_uses.append(tool_display)
 
-                            # Update status immediately for each tool
-                            tools_display = "\n".join(f"→ {t}" for t in tool_uses[-5:])
-                            await update_status(tools_display, force=True)
+                            # Update status with action + tools
+                            status_lines = []
+                            if current_action:
+                                status_lines.append(current_action)
+                            # Show last 5 tool uses
+                            status_lines.extend(tool_uses[-5:])
+                            await update_status("\n".join(status_lines), force=True)
 
                             # Pause for Edit operations - require approval
                             if tool_name == "Edit":
@@ -576,14 +611,14 @@ async def run_claude_streaming(
                                 }
 
                 elif msg_type == "user":
-                    # Tool results - show brief status
+                    # Tool results - mark last tool as done
                     content = data.get("message", {}).get("content", [])
                     for block in content:
                         if block.get("type") == "tool_result":
-                            if tool_uses and not tool_uses[-1].startswith("✓"):
-                                tool_uses.append("✓ Done")
-                                tools_display = "\n".join(f"→ {t}" for t in tool_uses[-5:])
-                                await update_status(tools_display)
+                            # Mark the last tool as completed with checkmark
+                            if tool_uses and not tool_uses[-1].startswith("✅"):
+                                tool_uses[-1] = "✅ " + tool_uses[-1].lstrip("📖📝✏️💻🔍🔎🌐🚀📋❓🔧 ")
+                                await update_status("\n".join(tool_uses[-5:]))
 
                 elif msg_type == "result":
                     # Final result

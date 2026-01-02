@@ -128,9 +128,9 @@ class TestEdgeCases:
 
     def test_format_tool_use_missing_keys(self):
         """Ensure missing keys in tool input are handled."""
-        assert bot.format_tool_use("Read", {}) == "Reading: ?"
-        assert bot.format_tool_use("Bash", {}) == "Running: ?"
-        assert bot.format_tool_use("Glob", {}) == "Searching: ?"
+        assert bot.format_tool_use("Read", {}) == "📖 Read(?)"
+        assert bot.format_tool_use("Bash", {}) == "💻 Bash: ?"
+        assert bot.format_tool_use("Glob", {}) == "🔍 Glob(?)"
 
 
 class TestSessionRegressions:
