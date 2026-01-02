@@ -277,12 +277,14 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
     Returns (response_text, session_id).
     """
     # Use stream-json for real-time updates
-    cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
+    cmd = ["claude", "-p", prompt, "--output-format", "stream-json"]
 
     if resume_id:
         cmd.extend(["--resume", resume_id])
 
-    logger.info(f"Running Claude in {cwd}")
+    logger.info(f"Running Claude in {cwd}: {' '.join(cmd[:4])}")
+
+    env = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
 
     process = await asyncio.create_subprocess_exec(
         *cmd,
@@ -290,132 +292,177 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         stdin=asyncio.subprocess.PIPE,
-        env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
+        env=env
     )
 
     full_response = ""
     session_id = None
     tool_uses = []
-    last_update = 0
+    last_update = [0.0]  # Use list for mutable in closure
     git_info = get_git_info(cwd)
     edits_made = []  # Track edits for summary
+    stop_heartbeat = [False]
 
     async def update_status(text: str, force: bool = False):
         """Update the status message with throttling."""
-        nonlocal last_update
         now = asyncio.get_event_loop().time()
-        if force or now - last_update > 0.5:
+        if force or now - last_update[0] > 1.0:
             try:
                 await status_message.edit_text(
                     f"<code>{cwd}</code> {git_info}\n\n{text}",
                     parse_mode=ParseMode.HTML
                 )
-                last_update = now
+                last_update[0] = now
             except Exception:
                 pass
 
-    try:
-        while True:
-            line = await asyncio.wait_for(
-                process.stdout.readline(),
-                timeout=300
-            )
+    async def heartbeat():
+        """Show progress animation while processing."""
+        phases = ["⏳ Analyzing request...", "⏳ Reading context...", "⏳ Processing...", "⏳ Thinking..."]
+        i = 0
+        while not stop_heartbeat[0]:
+            if not tool_uses:  # Only animate if no tool activity yet
+                await update_status(phases[i % len(phases)], force=True)
+            i += 1
+            await asyncio.sleep(2)
 
-            if not line:
+    # Start heartbeat task
+    heartbeat_task = asyncio.create_task(heartbeat())
+
+    async def read_stderr():
+        """Read stderr in background."""
+        try:
+            while True:
+                line = await process.stderr.readline()
+                if not line:
+                    break
+                line_str = line.decode().strip()
+                if line_str:
+                    logger.debug(f"stderr: {line_str}")
+        except Exception:
+            pass
+
+    # Start stderr reader
+    stderr_task = asyncio.create_task(read_stderr())
+
+    try:
+        buffer = ""
+        while True:
+            try:
+                # Read chunks instead of lines to handle buffering better
+                chunk = await asyncio.wait_for(
+                    process.stdout.read(4096),
+                    timeout=300
+                )
+            except asyncio.TimeoutError:
                 break
 
-            line_str = line.decode().strip()
-            if not line_str:
-                continue
+            if not chunk:
+                break
 
-            try:
-                data = json.loads(line_str)
-            except json.JSONDecodeError:
-                # Could be verbose output, show it
-                if line_str and not line_str.startswith('{'):
-                    tool_uses.append(line_str[:50])
-                    tools_display = "\n".join(f"→ {t}" for t in tool_uses[-5:])
-                    await update_status(tools_display)
-                continue
+            buffer += chunk.decode()
 
-            msg_type = data.get("type")
+            # Process complete lines
+            while "\n" in buffer:
+                line_str, buffer = buffer.split("\n", 1)
+                line_str = line_str.strip()
 
-            # Handle different message types
-            if msg_type == "assistant":
-                # Assistant text response
-                content = data.get("message", {}).get("content", [])
-                for block in content:
-                    if block.get("type") == "text":
-                        full_response = block.get("text", "")
-                    elif block.get("type") == "tool_use":
-                        tool_name = block.get("name", "")
-                        tool_input = block.get("input", {})
-                        tool_display = format_tool_use(tool_name, tool_input)
-                        tool_uses.append(tool_display)
+                if not line_str:
+                    continue
 
-                        # Update status immediately for each tool
-                        tools_display = "\n".join(f"→ {t}" for t in tool_uses[-5:])
-                        await update_status(tools_display, force=True)
+                try:
+                    data = json.loads(line_str)
+                except json.JSONDecodeError:
+                    logger.debug(f"Non-JSON line: {line_str[:100]}")
+                    continue
 
-                        # Show diff for Edit operations
-                        if tool_name == "Edit" and tool_input.get("old_string") and tool_input.get("new_string"):
-                            diff_display = format_diff(
-                                tool_input.get("old_string", ""),
-                                tool_input.get("new_string", ""),
-                                tool_input.get("file_path", "unknown")
-                            )
-                            edits_made.append(tool_input.get("file_path", "unknown").split("/")[-1])
+                msg_type = data.get("type")
 
-                            try:
-                                await context.bot.send_message(
-                                    chat_id=chat_id,
-                                    text=f"📝 <b>Edit:</b>\n\n{diff_display}",
-                                    parse_mode=ParseMode.HTML
+                # Handle different message types
+                if msg_type == "assistant":
+                    # Assistant text response
+                    content = data.get("message", {}).get("content", [])
+                    for block in content:
+                        if block.get("type") == "text":
+                            full_response = block.get("text", "")
+                        elif block.get("type") == "tool_use":
+                            tool_name = block.get("name", "")
+                            tool_input = block.get("input", {})
+                            tool_display = format_tool_use(tool_name, tool_input)
+                            tool_uses.append(tool_display)
+
+                            # Update status immediately for each tool
+                            tools_display = "\n".join(f"→ {t}" for t in tool_uses[-5:])
+                            await update_status(tools_display, force=True)
+
+                            # Show diff for Edit operations
+                            if tool_name == "Edit" and tool_input.get("old_string") and tool_input.get("new_string"):
+                                diff_display = format_diff(
+                                    tool_input.get("old_string", ""),
+                                    tool_input.get("new_string", ""),
+                                    tool_input.get("file_path", "unknown")
                                 )
-                            except Exception as e:
-                                logger.error(f"Failed to send diff: {e}")
+                                edits_made.append(tool_input.get("file_path", "unknown").split("/")[-1])
 
-                        # Show diff for Write operations (new files)
-                        elif tool_name == "Write" and tool_input.get("content"):
-                            file_path = tool_input.get("file_path", "unknown")
-                            content_preview = tool_input.get("content", "")[:1000]
-                            if len(tool_input.get("content", "")) > 1000:
-                                content_preview += "..."
-                            edits_made.append(file_path.split("/")[-1])
+                                try:
+                                    await context.bot.send_message(
+                                        chat_id=chat_id,
+                                        text=f"📝 <b>Edit:</b>\n\n{diff_display}",
+                                        parse_mode=ParseMode.HTML
+                                    )
+                                except Exception as e:
+                                    logger.error(f"Failed to send diff: {e}")
 
-                            try:
-                                await context.bot.send_message(
-                                    chat_id=chat_id,
-                                    text=f"📄 <b>New File:</b> {file_path.split('/')[-1]}\n\n<pre>{html.escape(content_preview)}</pre>",
-                                    parse_mode=ParseMode.HTML
-                                )
-                            except Exception as e:
-                                logger.error(f"Failed to send write preview: {e}")
+                            # Show diff for Write operations (new files)
+                            elif tool_name == "Write" and tool_input.get("content"):
+                                file_path = tool_input.get("file_path", "unknown")
+                                content_preview = tool_input.get("content", "")[:1000]
+                                if len(tool_input.get("content", "")) > 1000:
+                                    content_preview += "..."
+                                edits_made.append(file_path.split("/")[-1])
 
-            elif msg_type == "user":
-                # Tool results - show brief status
-                content = data.get("message", {}).get("content", [])
-                for block in content:
-                    if block.get("type") == "tool_result":
-                        tool_uses.append("✓ Done")
-                        tools_display = "\n".join(f"→ {t}" for t in tool_uses[-5:])
-                        await update_status(tools_display)
+                                try:
+                                    await context.bot.send_message(
+                                        chat_id=chat_id,
+                                        text=f"📄 <b>New File:</b> {file_path.split('/')[-1]}\n\n<pre>{html.escape(content_preview)}</pre>",
+                                        parse_mode=ParseMode.HTML
+                                    )
+                                except Exception as e:
+                                    logger.error(f"Failed to send write preview: {e}")
 
-            elif msg_type == "result":
-                # Final result
-                full_response = data.get("result", full_response)
-                session_id = data.get("session_id")
+                elif msg_type == "user":
+                    # Tool results - show brief status
+                    content = data.get("message", {}).get("content", [])
+                    for block in content:
+                        if block.get("type") == "tool_result":
+                            if tool_uses and not tool_uses[-1].startswith("✓"):
+                                tool_uses.append("✓ Done")
+                                tools_display = "\n".join(f"→ {t}" for t in tool_uses[-5:])
+                                await update_status(tools_display)
 
-                if edits_made:
-                    files_summary = ", ".join(set(edits_made))
-                    full_response = f"✅ <b>Files modified:</b> {files_summary}\n\n{full_response}"
+                elif msg_type == "result":
+                    # Final result
+                    full_response = data.get("result", full_response)
+                    session_id = data.get("session_id")
 
-            elif msg_type == "system":
-                await update_status("Loading context...")
+                    if edits_made:
+                        files_summary = ", ".join(set(edits_made))
+                        full_response = f"✅ <b>Files modified:</b> {files_summary}\n\n{full_response}"
+
+                elif msg_type == "system":
+                    tool_uses.append("📂 Loading context...")
+                    await update_status("📂 Loading context...", force=True)
 
     except asyncio.TimeoutError:
+        stop_heartbeat[0] = True
+        heartbeat_task.cancel()
         process.kill()
         return "Request timed out after 5 minutes.", None
+
+    finally:
+        stop_heartbeat[0] = True
+        heartbeat_task.cancel()
+        stderr_task.cancel()
 
     await process.wait()
 
@@ -580,10 +627,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Send typing indicator
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
-    # Send working status
+    # Send working status with animated indicator
     git_info = get_git_info(session.cwd)
     status_message = await update.message.reply_text(
-        f"Working...\n\n<code>{session.cwd}</code> {git_info}",
+        f"<code>{session.cwd}</code> {git_info}\n\n⏳ Thinking...",
         parse_mode=ParseMode.HTML
     )
 
