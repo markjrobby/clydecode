@@ -12,6 +12,7 @@ import shutil
 import asyncio
 import logging
 import subprocess
+import uuid
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -74,6 +75,23 @@ class Session:
         )
 
 
+@dataclass
+class PendingEdit:
+    """Tracks an edit waiting for user approval."""
+    edit_id: str
+    chat_id: int
+    message_id: int
+    user_id: int
+    tool_name: str  # "Edit" or "Write"
+    file_path: str
+    old_string: str  # Original content (empty for Write)
+    new_string: str  # New content
+    process: asyncio.subprocess.Process
+    session_id: Optional[str]
+    cwd: str
+    created_at: datetime = field(default_factory=datetime.now)
+
+
 class SessionManager:
     """Manages user sessions with persistence."""
 
@@ -125,8 +143,8 @@ class SessionManager:
 
 sessions = SessionManager(SESSIONS_FILE)
 
-# Pending permission requests: {callback_id: {process, prompt_data, chat_id, ...}}
-pending_permissions: dict[str, dict] = {}
+# Pending edits awaiting approval: {edit_id: PendingEdit}
+pending_edits: dict[str, PendingEdit] = {}
 
 
 def redact_sensitive(text: str) -> str:
@@ -278,11 +296,39 @@ def format_diff(old_string: str, new_string: str, file_path: str) -> str:
     return diff_text
 
 
-async def run_claude_streaming(prompt: str, cwd: str, status_message, context, chat_id: int, resume_id: str = None):
+def format_new_file(content: str, file_path: str) -> str:
+    """Format new file preview (all green)."""
+    filename = file_path.split('/')[-1]
+
+    max_len = 500
+    display = content[:max_len] + "..." if len(content) > max_len else content
+
+    lines = display.split('\n')
+    formatted = '\n'.join(f"🟩 {line}" for line in lines)
+
+    text = f"<b>📄 {filename}</b> (new file)\n\n"
+    text += f"<pre>{html.escape(formatted)}</pre>"
+
+    return text
+
+
+async def run_claude_streaming(
+    prompt: str,
+    cwd: str,
+    status_message,
+    context,
+    chat_id: int,
+    user_id: int,
+    resume_id: str = None
+) -> dict:
     """
     Run Claude Code CLI with streaming output.
     Updates status_message with progress.
-    Returns (response_text, session_id).
+
+    Returns dict with one of:
+    - {"status": "complete", "response": str, "session_id": str}
+    - {"status": "pending_approval", "edit_id": str, "tool_name": str, ...}
+    - {"status": "error", "message": str}
     """
     # Use stream-json for real-time updates
     # --verbose is REQUIRED when using stream-json with -p
@@ -405,40 +451,47 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
                             tools_display = "\n".join(f"→ {t}" for t in tool_uses[-5:])
                             await update_status(tools_display, force=True)
 
-                            # Show diff for Edit operations
-                            if tool_name == "Edit" and tool_input.get("old_string") and tool_input.get("new_string"):
-                                diff_display = format_diff(
-                                    tool_input.get("old_string", ""),
-                                    tool_input.get("new_string", ""),
-                                    tool_input.get("file_path", "unknown")
-                                )
-                                edits_made.append(tool_input.get("file_path", "unknown").split("/")[-1])
+                            # Pause for Edit operations - require approval
+                            if tool_name == "Edit":
+                                stop_heartbeat[0] = True
+                                heartbeat_task.cancel()
+                                stderr_task.cancel()
 
-                                try:
-                                    await context.bot.send_message(
-                                        chat_id=chat_id,
-                                        text=f"📝 <b>Edit:</b>\n\n{diff_display}",
-                                        parse_mode=ParseMode.HTML
-                                    )
-                                except Exception as e:
-                                    logger.error(f"Failed to send diff: {e}")
+                                edit_id = str(uuid.uuid4())[:8]
+                                return {
+                                    "status": "pending_approval",
+                                    "edit_id": edit_id,
+                                    "tool_name": "Edit",
+                                    "file_path": tool_input.get("file_path", ""),
+                                    "old_string": tool_input.get("old_string", ""),
+                                    "new_string": tool_input.get("new_string", ""),
+                                    "process": process,
+                                    "session_id": session_id,
+                                    "cwd": cwd,
+                                    "user_id": user_id,
+                                    "status_message": status_message,
+                                }
 
-                            # Show diff for Write operations (new files)
-                            elif tool_name == "Write" and tool_input.get("content"):
-                                file_path = tool_input.get("file_path", "unknown")
-                                content_preview = tool_input.get("content", "")[:1000]
-                                if len(tool_input.get("content", "")) > 1000:
-                                    content_preview += "..."
-                                edits_made.append(file_path.split("/")[-1])
+                            # Pause for Write operations - require approval
+                            elif tool_name == "Write":
+                                stop_heartbeat[0] = True
+                                heartbeat_task.cancel()
+                                stderr_task.cancel()
 
-                                try:
-                                    await context.bot.send_message(
-                                        chat_id=chat_id,
-                                        text=f"📄 <b>New File:</b> {file_path.split('/')[-1]}\n\n<pre>{html.escape(content_preview)}</pre>",
-                                        parse_mode=ParseMode.HTML
-                                    )
-                                except Exception as e:
-                                    logger.error(f"Failed to send write preview: {e}")
+                                edit_id = str(uuid.uuid4())[:8]
+                                return {
+                                    "status": "pending_approval",
+                                    "edit_id": edit_id,
+                                    "tool_name": "Write",
+                                    "file_path": tool_input.get("file_path", ""),
+                                    "old_string": "",
+                                    "new_string": tool_input.get("content", ""),
+                                    "process": process,
+                                    "session_id": session_id,
+                                    "cwd": cwd,
+                                    "user_id": user_id,
+                                    "status_message": status_message,
+                                }
 
                 elif msg_type == "user":
                     # Tool results - show brief status
@@ -460,6 +513,8 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
                         full_response = f"✅ <b>Files modified:</b> {files_summary}\n\n{full_response}"
 
                 elif msg_type == "system":
+                    # Extract session_id from system message
+                    session_id = data.get("session_id", session_id)
                     tool_uses.append("📂 Loading context...")
                     await update_status("📂 Loading context...", force=True)
 
@@ -467,7 +522,7 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
         stop_heartbeat[0] = True
         heartbeat_task.cancel()
         process.kill()
-        return "Request timed out after 5 minutes.", None
+        return {"status": "error", "message": "Request timed out after 5 minutes."}
 
     finally:
         stop_heartbeat[0] = True
@@ -480,9 +535,9 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
         stderr = await process.stderr.read()
         error_msg = stderr.decode().strip() if stderr else "Unknown error"
         logger.error(f"Claude CLI error: {error_msg}")
-        return f"Error: {error_msg[:500]}", None
+        return {"status": "error", "message": f"Error: {error_msg[:500]}"}
 
-    return full_response, session_id
+    return {"status": "complete", "response": full_response, "session_id": session_id}
 
 
 # Command handlers
@@ -620,6 +675,241 @@ async def cmd_git(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Error: {e}")
 
 
+async def show_approval_request(chat_id: int, context, edit_info: dict) -> int:
+    """Show diff with approval buttons. Returns the message ID."""
+    edit_id = edit_info["edit_id"]
+
+    # Format diff
+    if edit_info["tool_name"] == "Edit":
+        diff_text = format_diff(
+            edit_info["old_string"],
+            edit_info["new_string"],
+            edit_info["file_path"]
+        )
+        btn_approve, btn_reject = "✅ Approve", "❌ Reject"
+    else:
+        diff_text = format_new_file(
+            edit_info["new_string"],
+            edit_info["file_path"]
+        )
+        btn_approve, btn_reject = "✅ Create", "❌ Cancel"
+
+    # Create buttons
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(btn_approve, callback_data=f"approve_{edit_id}"),
+        InlineKeyboardButton(btn_reject, callback_data=f"reject_{edit_id}")
+    ]])
+
+    # Send diff with buttons
+    msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text=diff_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard
+    )
+
+    return msg.message_id
+
+
+async def continue_after_approval(pending: PendingEdit, context) -> dict:
+    """Continue reading Claude output after approval."""
+    full_response = ""
+    session_id = pending.session_id
+
+    try:
+        while True:
+            try:
+                chunk = await asyncio.wait_for(
+                    pending.process.stdout.read(4096),
+                    timeout=300
+                )
+            except asyncio.TimeoutError:
+                break
+
+            if not chunk:
+                break
+
+            for line in chunk.decode().split('\n'):
+                if not line.strip():
+                    continue
+                try:
+                    data = json.loads(line)
+                    msg_type = data.get("type")
+
+                    if msg_type == "result":
+                        full_response = data.get("result", "")
+                        session_id = data.get("session_id", session_id)
+
+                    elif msg_type == "assistant":
+                        content = data.get("message", {}).get("content", [])
+                        for block in content:
+                            if block.get("type") == "tool_use":
+                                tool_name = block.get("name", "")
+                                tool_input = block.get("input", {})
+
+                                # Another Edit/Write - need approval again
+                                if tool_name == "Edit":
+                                    edit_id = str(uuid.uuid4())[:8]
+                                    return {
+                                        "status": "pending_approval",
+                                        "edit_id": edit_id,
+                                        "tool_name": "Edit",
+                                        "file_path": tool_input.get("file_path", ""),
+                                        "old_string": tool_input.get("old_string", ""),
+                                        "new_string": tool_input.get("new_string", ""),
+                                        "process": pending.process,
+                                        "session_id": session_id,
+                                        "cwd": pending.cwd,
+                                        "user_id": pending.user_id,
+                                    }
+                                elif tool_name == "Write":
+                                    edit_id = str(uuid.uuid4())[:8]
+                                    return {
+                                        "status": "pending_approval",
+                                        "edit_id": edit_id,
+                                        "tool_name": "Write",
+                                        "file_path": tool_input.get("file_path", ""),
+                                        "old_string": "",
+                                        "new_string": tool_input.get("content", ""),
+                                        "process": pending.process,
+                                        "session_id": session_id,
+                                        "cwd": pending.cwd,
+                                        "user_id": pending.user_id,
+                                    }
+
+                except json.JSONDecodeError:
+                    continue
+
+        await pending.process.wait()
+        return {"status": "complete", "response": full_response, "session_id": session_id}
+
+    except Exception as e:
+        logger.error(f"Error continuing after approval: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+async def handle_approve(query, pending: PendingEdit, context):
+    """Handle approval of an edit."""
+    filename = pending.file_path.split('/')[-1]
+
+    # Update the diff message to show approval
+    await query.edit_message_text(
+        f"✅ Approved edit to <b>{filename}</b>\n\nContinuing...",
+        parse_mode=ParseMode.HTML
+    )
+
+    # Continue reading Claude output
+    result = await continue_after_approval(pending, context)
+
+    if result["status"] == "pending_approval":
+        # Another edit needs approval
+        msg_id = await show_approval_request(pending.chat_id, context, result)
+
+        pending_edits[result["edit_id"]] = PendingEdit(
+            edit_id=result["edit_id"],
+            chat_id=pending.chat_id,
+            message_id=msg_id,
+            user_id=pending.user_id,
+            tool_name=result["tool_name"],
+            file_path=result["file_path"],
+            old_string=result["old_string"],
+            new_string=result["new_string"],
+            process=result["process"],
+            session_id=result["session_id"],
+            cwd=pending.cwd,
+        )
+
+    elif result["status"] == "complete":
+        # Update session with new session ID
+        if result.get("session_id"):
+            sessions.update(pending.user_id, resume_id=result["session_id"])
+
+        if result.get("response"):
+            response = redact_sensitive(result["response"])
+            response_html = markdown_to_html(response)
+            response_html = truncate_message(response_html)
+
+            git_info = get_git_info(pending.cwd)
+            header = f"<code>{pending.cwd}</code> {git_info}\n\n"
+
+            await context.bot.send_message(
+                chat_id=pending.chat_id,
+                text=header + response_html,
+                parse_mode=ParseMode.HTML
+            )
+
+    elif result["status"] == "error":
+        await context.bot.send_message(
+            chat_id=pending.chat_id,
+            text=f"Error: {result.get('message', 'Unknown error')[:200]}"
+        )
+
+
+async def handle_reject(query, pending: PendingEdit, context):
+    """Handle rejection of an edit."""
+    filename = pending.file_path.split('/')[-1]
+
+    # Kill Claude process
+    try:
+        pending.process.kill()
+        await pending.process.wait()
+    except Exception:
+        pass
+
+    # Prompt for new instructions
+    await query.edit_message_text(
+        f"❌ Rejected edit to <b>{filename}</b>\n\n"
+        f"What would you like me to do instead?",
+        parse_mode=ParseMode.HTML
+    )
+
+
+async def handle_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle approve/reject button callbacks."""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data  # "approve_abc123" or "reject_abc123"
+    action, edit_id = data.split("_", 1)
+
+    if edit_id not in pending_edits:
+        await query.edit_message_text("⚠️ This edit has expired.")
+        return
+
+    pending = pending_edits.pop(edit_id)
+
+    # Verify user
+    if query.from_user.id != pending.user_id:
+        pending_edits[edit_id] = pending  # Put back
+        await query.answer("Only the requester can approve.", show_alert=True)
+        return
+
+    if action == "approve":
+        await handle_approve(query, pending, context)
+    else:
+        await handle_reject(query, pending, context)
+
+
+async def cleanup_stale_edits():
+    """Kill edits pending for more than 10 minutes."""
+    while True:
+        await asyncio.sleep(60)
+        now = datetime.now()
+        stale = [
+            eid for eid, edit in pending_edits.items()
+            if (now - edit.created_at).total_seconds() > 600
+        ]
+        for edit_id in stale:
+            edit = pending_edits.pop(edit_id, None)
+            if edit:
+                try:
+                    edit.process.kill()
+                    await edit.process.wait()
+                except Exception:
+                    pass
+                logger.info(f"Cleaned up stale edit: {edit_id}")
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle regular messages - send to Claude Code CLI."""
     if not is_authorized(update.effective_user.id):
@@ -646,39 +936,79 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         # Run Claude Code CLI with streaming
-        response, new_session_id = await run_claude_streaming(
+        result = await run_claude_streaming(
             prompt=user_message,
             cwd=session.cwd,
             status_message=status_message,
             context=context,
             chat_id=update.effective_chat.id,
+            user_id=user_id,
             resume_id=session.resume_id
         )
 
-        # Update session with new resume ID if provided
-        if new_session_id:
-            sessions.update(user_id, resume_id=new_session_id)
+        if result["status"] == "pending_approval":
+            # Delete status message
+            try:
+                await status_message.delete()
+            except Exception:
+                pass
 
-        # Delete status message
-        try:
-            await status_message.delete()
-        except Exception:
-            pass
-
-        # Send response
-        if response:
-            response = redact_sensitive(response)
-            response_html = markdown_to_html(response)
-            response_html = truncate_message(response_html)
-
-            header = f"<code>{session.cwd}</code> {git_info}\n\n"
-
-            await update.message.reply_text(
-                header + response_html,
-                parse_mode=ParseMode.HTML
+            # Show approval request
+            msg_id = await show_approval_request(
+                update.effective_chat.id,
+                context,
+                result
             )
-        else:
-            await update.message.reply_text("No response from Claude.")
+
+            # Store pending edit
+            pending_edits[result["edit_id"]] = PendingEdit(
+                edit_id=result["edit_id"],
+                chat_id=update.effective_chat.id,
+                message_id=msg_id,
+                user_id=user_id,
+                tool_name=result["tool_name"],
+                file_path=result["file_path"],
+                old_string=result["old_string"],
+                new_string=result["new_string"],
+                process=result["process"],
+                session_id=result["session_id"],
+                cwd=session.cwd,
+            )
+
+        elif result["status"] == "complete":
+            # Update session with new resume ID if provided
+            if result.get("session_id"):
+                sessions.update(user_id, resume_id=result["session_id"])
+
+            # Delete status message
+            try:
+                await status_message.delete()
+            except Exception:
+                pass
+
+            # Send response
+            response = result.get("response", "")
+            if response:
+                response = redact_sensitive(response)
+                response_html = markdown_to_html(response)
+                response_html = truncate_message(response_html)
+
+                header = f"<code>{session.cwd}</code> {git_info}\n\n"
+
+                await update.message.reply_text(
+                    header + response_html,
+                    parse_mode=ParseMode.HTML
+                )
+            else:
+                await update.message.reply_text("No response from Claude.")
+
+        elif result["status"] == "error":
+            # Delete status message
+            try:
+                await status_message.delete()
+            except Exception:
+                pass
+            await update.message.reply_text(result.get("message", "Unknown error"))
 
     except Exception as e:
         logger.error(f"Error processing message: {e}")
@@ -689,13 +1019,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Error: {str(e)[:200]}")
 
 
+async def post_init(app: Application):
+    """Run after application initialization."""
+    # Start background cleanup task
+    asyncio.create_task(cleanup_stale_edits())
+
+
 def main():
     """Start the bot."""
     if not TELEGRAM_BOT_TOKEN:
         print("Error: TELEGRAM_BOT_TOKEN not set in .env")
         return
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
@@ -703,6 +1039,7 @@ def main():
     app.add_handler(CommandHandler("cwd", cmd_cwd))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("git", cmd_git))
+    app.add_handler(CallbackQueryHandler(handle_edit_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print(f"Bot running! Using Claude Code CLI directly.")
