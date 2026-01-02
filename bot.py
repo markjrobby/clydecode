@@ -256,17 +256,25 @@ def format_tool_use(tool_name: str, tool_input: dict) -> str:
 
 
 def format_diff(old_string: str, new_string: str, file_path: str) -> str:
-    """Format a simple diff for display."""
+    """Format a diff similar to Claude Code CLI style."""
     filename = file_path.split('/')[-1]
 
     # Truncate if too long
-    max_len = 800
+    max_len = 600
     old_display = old_string[:max_len] + "..." if len(old_string) > max_len else old_string
     new_display = new_string[:max_len] + "..." if len(new_string) > max_len else new_string
 
-    diff_text = f"<b>File:</b> {filename}\n\n"
-    diff_text += f"<b>- Remove:</b>\n<pre>{html.escape(old_display)}</pre>\n\n"
-    diff_text += f"<b>+ Add:</b>\n<pre>{html.escape(new_display)}</pre>"
+    # Format old lines with - prefix (red in CLI)
+    old_lines = old_display.split('\n')
+    old_formatted = '\n'.join(f"- {line}" for line in old_lines)
+
+    # Format new lines with + prefix (green in CLI)
+    new_lines = new_display.split('\n')
+    new_formatted = '\n'.join(f"+ {line}" for line in new_lines)
+
+    diff_text = f"<b>{filename}</b>\n\n"
+    diff_text += f"<pre>{html.escape(old_formatted)}</pre>\n\n"
+    diff_text += f"<pre>{html.escape(new_formatted)}</pre>"
 
     return diff_text
 
@@ -286,7 +294,6 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
 
     cmd = base_cmd
     logger.info(f"Running Claude in {cwd}")
-    logger.info(f"Command: {' '.join(cmd)}")
 
     env = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
 
@@ -299,8 +306,6 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
         stdin=asyncio.subprocess.DEVNULL,
         env=env
     )
-
-    logger.info(f"Process started with PID {process.pid}")
 
     full_response = ""
     session_id = None
@@ -331,9 +336,6 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
             if not tool_uses:  # Only animate if no tool activity yet
                 await update_status(phases[i % len(phases)], force=True)
             i += 1
-            # Log heartbeat to show we're still alive
-            if i % 5 == 0:
-                logger.info(f"Heartbeat #{i}, waiting for Claude output...")
             await asyncio.sleep(2)
 
     # Start heartbeat task
@@ -371,7 +373,6 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
                 break
 
             buffer += chunk.decode()
-            logger.info(f"Received chunk: {len(chunk)} bytes, buffer now {len(buffer)} bytes")
 
             # Process complete lines
             while "\n" in buffer:
@@ -383,9 +384,7 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
 
                 try:
                     data = json.loads(line_str)
-                    logger.info(f"Parsed JSON type: {data.get('type')}")
                 except json.JSONDecodeError:
-                    logger.warning(f"Non-JSON line: {line_str[:100]}")
                     continue
 
                 msg_type = data.get("type")
@@ -477,16 +476,12 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
         stderr_task.cancel()
 
     await process.wait()
-    logger.info(f"Claude process exited with code {process.returncode}")
 
     if process.returncode != 0:
         stderr = await process.stderr.read()
         error_msg = stderr.decode().strip() if stderr else "Unknown error"
-        logger.error(f"Claude CLI error (exit {process.returncode}): {error_msg}")
+        logger.error(f"Claude CLI error: {error_msg}")
         return f"Error: {error_msg[:500]}", None
-
-    if not full_response:
-        logger.warning("No response text captured from Claude")
 
     return full_response, session_id
 
