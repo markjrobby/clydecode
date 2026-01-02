@@ -286,6 +286,7 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
 
     cmd = base_cmd
     logger.info(f"Running Claude in {cwd}")
+    logger.info(f"Command: {' '.join(cmd)}")
 
     env = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
 
@@ -327,6 +328,9 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
             if not tool_uses:  # Only animate if no tool activity yet
                 await update_status(phases[i % len(phases)], force=True)
             i += 1
+            # Log heartbeat to show we're still alive
+            if i % 5 == 0:
+                logger.info(f"Heartbeat #{i}, waiting for Claude output...")
             await asyncio.sleep(2)
 
     # Start heartbeat task
