@@ -593,7 +593,7 @@ async def run_claude_streaming(
                                     pages = format_diff(old_string, new_string, file_path)
                                     await context.bot.send_message(
                                         chat_id=chat_id,
-                                        text=f"<pre>✏️ Editing {filename}\n\n{pages[0][:3500]}</pre>",
+                                        text=f"✏️ <b>Editing</b> <code>{html.escape(filename)}</code>\n\n{pages[0][:3500]}",
                                         parse_mode=ParseMode.HTML
                                     )
                                 except Exception as e:
@@ -611,7 +611,7 @@ async def run_claude_streaming(
                                     pages = format_new_file(content, file_path)
                                     await context.bot.send_message(
                                         chat_id=chat_id,
-                                        text=f"<pre>📝 Creating {filename}\n\n{pages[0][:3500]}</pre>",
+                                        text=f"📝 <b>Creating</b> <code>{html.escape(filename)}</code>\n\n{pages[0][:3500]}",
                                         parse_mode=ParseMode.HTML
                                     )
                                 except Exception as e:
@@ -1052,11 +1052,11 @@ async def handle_approve(query, pending: PendingEdit, context):
             response = truncate_message(response, max_length=3900)
 
             git_info = get_git_info(pending.cwd)
-            header = f"{pending.cwd} {git_info}\n\n"
+            header = f"<code>{html.escape(pending.cwd)}</code> {git_info}\n\n"
 
             await context.bot.send_message(
                 chat_id=pending.chat_id,
-                text=f"<pre>{html.escape(header)}{response}</pre>",
+                text=header + response,
                 parse_mode=ParseMode.HTML
             )
             logger.info("Response sent successfully")
@@ -1230,14 +1230,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response = result.get("response", "")
             if response:
                 response = redact_sensitive(response)
-                # Escape HTML and keep as plain text (monospace)
                 response = html.escape(response)
                 response = truncate_message(response, max_length=3900)
 
-                header = f"{session.cwd} {git_info}\n\n"
+                header = f"<code>{html.escape(session.cwd)}</code> {git_info}\n\n"
 
                 await update.message.reply_text(
-                    f"<pre>{html.escape(header)}{response}</pre>",
+                    header + response,
                     parse_mode=ParseMode.HTML
                 )
             else:
