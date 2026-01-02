@@ -850,6 +850,7 @@ async def show_approval_request(chat_id: int, context, edit_info: dict, page: in
 
 async def continue_after_approval(pending: PendingEdit, context, status_message) -> dict:
     """Continue reading Claude output after approval with spinner feedback."""
+    logger.info(f"continue_after_approval started for {pending.file_path}")
     full_response = ""
     session_id = pending.session_id
     tool_uses = []
@@ -896,18 +897,22 @@ async def continue_after_approval(pending: PendingEdit, context, status_message)
                 break
 
             if not chunk:
+                logger.info("continue_after_approval: EOF received")
                 break
 
+            logger.debug(f"continue_after_approval chunk: {chunk[:200]}")
             for line in chunk.decode().split('\n'):
                 if not line.strip():
                     continue
                 try:
                     data = json.loads(line)
                     msg_type = data.get("type")
+                    logger.info(f"continue_after_approval: msg_type={msg_type}")
 
                     if msg_type == "result":
                         full_response = data.get("result", "")
                         session_id = data.get("session_id", session_id)
+                        logger.info(f"continue_after_approval: got result, response length={len(full_response)}")
 
                     elif msg_type == "assistant":
                         content = data.get("message", {}).get("content", [])
@@ -972,19 +977,22 @@ async def continue_after_approval(pending: PendingEdit, context, status_message)
 
         stop_spinner[0] = True
         spinner_task.cancel()
+        logger.info(f"continue_after_approval: waiting for process to finish")
         await pending.process.wait()
+        logger.info(f"continue_after_approval: returning complete, response length={len(full_response)}")
         return {"status": "complete", "response": full_response, "session_id": session_id}
 
     except Exception as e:
         stop_spinner[0] = True
         spinner_task.cancel()
-        logger.error(f"Error continuing after approval: {e}")
+        logger.error(f"Error continuing after approval: {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
 
 
 async def handle_approve(query, pending: PendingEdit, context):
     """Handle approval of an edit."""
     filename = pending.file_path.split('/')[-1]
+    logger.info(f"Approving edit to {filename} for user {pending.user_id}")
 
     # Update the diff message to show approval (this becomes the status message)
     await query.edit_message_text(
@@ -993,14 +1001,17 @@ async def handle_approve(query, pending: PendingEdit, context):
     )
 
     # Continue reading Claude output with spinner feedback
+    logger.info("Starting continue_after_approval...")
     result = await continue_after_approval(pending, context, query.message)
+    logger.info(f"continue_after_approval returned: status={result.get('status')}")
 
     if result["status"] == "pending_approval":
+        logger.info(f"Another edit pending: {result.get('file_path')}")
         # Delete the status message before showing new approval request
         try:
             await query.message.delete()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to delete status message: {e}")
 
         # Another edit needs approval
         msg_id, pages = await show_approval_request(pending.chat_id, context, result)
@@ -1019,13 +1030,15 @@ async def handle_approve(query, pending: PendingEdit, context):
             cwd=pending.cwd,
             pages=pages,
         )
+        logger.info(f"Created new pending edit: {result['edit_id']}")
 
     elif result["status"] == "complete":
+        logger.info("Task complete, sending response")
         # Delete the status message
         try:
             await query.message.delete()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to delete status message: {e}")
 
         # Update session with new session ID
         if result.get("session_id"):
@@ -1044,11 +1057,25 @@ async def handle_approve(query, pending: PendingEdit, context):
                 text=header + response_html,
                 parse_mode=ParseMode.HTML
             )
+            logger.info("Response sent successfully")
+        else:
+            logger.warning("No response in result, sending fallback message")
+            await context.bot.send_message(
+                chat_id=pending.chat_id,
+                text="✅ Done (no response from Claude)"
+            )
 
     elif result["status"] == "error":
+        logger.error(f"Error from continue_after_approval: {result.get('message')}")
         await context.bot.send_message(
             chat_id=pending.chat_id,
             text=f"Error: {result.get('message', 'Unknown error')[:200]}"
+        )
+    else:
+        logger.error(f"Unknown status from continue_after_approval: {result}")
+        await context.bot.send_message(
+            chat_id=pending.chat_id,
+            text="Something went wrong - unknown status"
         )
 
 
