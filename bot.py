@@ -256,23 +256,22 @@ def format_tool_use(tool_name: str, tool_input: dict) -> str:
 
 
 def format_diff(old_string: str, new_string: str, file_path: str) -> str:
-    """Format a diff similar to Claude Code CLI style."""
+    """Format a diff with colored emoji indicators."""
     filename = file_path.split('/')[-1]
 
     # Truncate if too long
-    max_len = 600
+    max_len = 500
     old_display = old_string[:max_len] + "..." if len(old_string) > max_len else old_string
     new_display = new_string[:max_len] + "..." if len(new_string) > max_len else new_string
 
-    # Format old lines with - prefix (red in CLI)
+    # Format with emoji color indicators
     old_lines = old_display.split('\n')
-    old_formatted = '\n'.join(f"- {line}" for line in old_lines)
+    old_formatted = '\n'.join(f"🟥 {line}" for line in old_lines)
 
-    # Format new lines with + prefix (green in CLI)
     new_lines = new_display.split('\n')
-    new_formatted = '\n'.join(f"+ {line}" for line in new_lines)
+    new_formatted = '\n'.join(f"🟩 {line}" for line in new_lines)
 
-    diff_text = f"<b>{filename}</b>\n\n"
+    diff_text = f"<b>📄 {filename}</b>\n\n"
     diff_text += f"<pre>{html.escape(old_formatted)}</pre>\n\n"
     diff_text += f"<pre>{html.escape(new_formatted)}</pre>"
 
