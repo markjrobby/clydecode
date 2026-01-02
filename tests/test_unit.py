@@ -199,23 +199,35 @@ class TestFormatDiff:
     def test_formats_basic_diff(self):
         result = bot.format_diff("old code", "new code", "/path/to/file.py")
         assert "file.py" in result
-        assert "old code" in result
-        assert "new code" in result
+        # Should show removed and added lines with emoji
+        assert "🟥" in result  # Removed
+        assert "🟩" in result  # Added
 
     def test_includes_filename(self):
         result = bot.format_diff("old", "new", "/path/to/myfile.py")
         assert "myfile.py" in result
 
+    def test_shows_context_lines(self):
+        old_code = "line1\nline2\nold line\nline4\nline5"
+        new_code = "line1\nline2\nnew line\nline4\nline5"
+        result = bot.format_diff(old_code, new_code, "/file.py")
+        # Should include context lines (line1, line2, line4, line5)
+        assert "line1" in result or "line2" in result
+
     def test_truncates_long_content(self):
-        old_content = "x" * 600
-        new_content = "y" * 600
+        old_content = "\n".join(f"line {i}" for i in range(500))
+        new_content = "\n".join(f"new line {i}" for i in range(500))
         result = bot.format_diff(old_content, new_content, "/file.py")
-        assert "..." in result
+        assert "truncated" in result.lower()
 
     def test_escapes_html(self):
         result = bot.format_diff("<script>", "</script>", "/file.py")
         assert "<script>" not in result
         assert "&lt;script&gt;" in result
+
+    def test_no_changes_shows_message(self):
+        result = bot.format_diff("same content", "same content", "/file.py")
+        assert "No changes" in result
 
 
 class TestFormatNewFile:

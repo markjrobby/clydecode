@@ -274,24 +274,55 @@ def format_tool_use(tool_name: str, tool_input: dict) -> str:
 
 
 def format_diff(old_string: str, new_string: str, file_path: str) -> str:
-    """Format a diff with colored emoji indicators."""
+    """Format a unified diff with context lines, like Claude Code does."""
+    import difflib
+
     filename = file_path.split('/')[-1]
 
-    # Truncate if too long
-    max_len = 500
-    old_display = old_string[:max_len] + "..." if len(old_string) > max_len else old_string
-    new_display = new_string[:max_len] + "..." if len(new_string) > max_len else new_string
+    old_lines = old_string.splitlines(keepends=True)
+    new_lines = new_string.splitlines(keepends=True)
 
-    # Format with emoji color indicators
-    old_lines = old_display.split('\n')
-    old_formatted = '\n'.join(f"🟥 {line}" for line in old_lines)
+    # Generate unified diff with 3 lines of context
+    diff = list(difflib.unified_diff(
+        old_lines,
+        new_lines,
+        fromfile=filename,
+        tofile=filename,
+        lineterm=''
+    ))
 
-    new_lines = new_display.split('\n')
-    new_formatted = '\n'.join(f"🟩 {line}" for line in new_lines)
+    if not diff:
+        return f"<b>📄 {filename}</b>\n\n<i>No changes</i>"
+
+    # Format diff lines with colors
+    formatted_lines = []
+    for line in diff:
+        line = line.rstrip('\n')
+        if line.startswith('+++') or line.startswith('---'):
+            # File headers - skip them, we show filename separately
+            continue
+        elif line.startswith('@@'):
+            # Hunk header - show in gray/muted
+            formatted_lines.append(f"   {line}")
+        elif line.startswith('-'):
+            # Removed line - red
+            formatted_lines.append(f"🟥 {line[1:]}")
+        elif line.startswith('+'):
+            # Added line - green
+            formatted_lines.append(f"🟩 {line[1:]}")
+        else:
+            # Context line - no prefix, just indent
+            formatted_lines.append(f"   {line[1:] if line.startswith(' ') else line}")
+
+    diff_content = '\n'.join(formatted_lines)
+
+    # Truncate if too long for Telegram
+    max_len = 3000
+    if len(diff_content) > max_len:
+        diff_content = diff_content[:max_len] + "\n\n... (truncated)"
 
     diff_text = f"<b>📄 {filename}</b>\n\n"
-    diff_text += f"<pre>{html.escape(old_formatted)}</pre>\n\n"
-    diff_text += f"<pre>{html.escape(new_formatted)}</pre>"
+    diff_text += f"<pre>{html.escape(diff_content)}</pre>"
 
     return diff_text
 

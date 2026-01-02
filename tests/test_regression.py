@@ -355,12 +355,24 @@ class TestDiffFormattingRegressions:
 
         result = bot.format_diff(old_code, new_code, "/file.py")
         assert result is not None
-        assert "..." in result  # Should be truncated
 
     def test_diff_with_many_lines(self):
         """Ensure many lines are handled."""
-        old_code = "\n".join(f"line {i}" for i in range(100))
-        new_code = "\n".join(f"new line {i}" for i in range(100))
+        old_code = "\n".join(f"line {i}" for i in range(500))
+        new_code = "\n".join(f"new line {i}" for i in range(500))
 
         result = bot.format_diff(old_code, new_code, "/file.py")
         assert result is not None
+        assert "truncated" in result.lower()
+
+    def test_unified_diff_format(self):
+        """Ensure unified diff shows context lines."""
+        old_code = "line1\nline2\nold\nline4\nline5"
+        new_code = "line1\nline2\nnew\nline4\nline5"
+
+        result = bot.format_diff(old_code, new_code, "/file.py")
+        # Should have context lines around the change
+        assert "line2" in result or "line4" in result
+        # Should have emoji markers
+        assert "🟥" in result
+        assert "🟩" in result
