@@ -224,12 +224,10 @@ async def run_claude(prompt: str, cwd: str, resume_id: str = None) -> tuple[str,
     Run Claude Code CLI and return the response.
     Returns (response_text, session_id).
     """
-    cmd = ["claude", "--print", "--output-format", "text"]
+    cmd = ["claude", "-p", prompt, "--output-format", "text"]
 
     if resume_id:
         cmd.extend(["--resume", resume_id])
-
-    cmd.extend(["--prompt", prompt])
 
     logger.info(f"Running Claude in {cwd}")
 
