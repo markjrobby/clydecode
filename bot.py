@@ -429,15 +429,22 @@ async def run_claude_streaming(
     """
     Run Claude Code CLI with streaming output.
     Updates status_message with progress.
+    Sends diff notifications for Edit/Write operations.
 
     Returns dict with one of:
     - {"status": "complete", "response": str, "session_id": str}
-    - {"status": "pending_approval", "edit_id": str, "tool_name": str, ...}
     - {"status": "error", "message": str}
     """
     # Use stream-json for real-time updates
     # --verbose is REQUIRED when using stream-json with -p
-    base_cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
+    # Auto-allow all tools - we show diffs to user but don't block Claude
+    # This provides visibility without blocking the workflow
+    base_cmd = [
+        "claude", "-p", prompt,
+        "--output-format", "stream-json",
+        "--verbose",
+        "--allowedTools", "Edit,Write,Read,Glob,Grep,Bash,WebSearch,WebFetch,Task,TodoWrite,NotebookEdit"
+    ]
 
     if resume_id:
         base_cmd.extend(["--resume", resume_id])
@@ -447,7 +454,6 @@ async def run_claude_streaming(
 
     env = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
 
-    # Don't pipe stdin - Claude CLI doesn't need it and it may cause issues
     process = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=cwd,
@@ -573,47 +579,42 @@ async def run_claude_streaming(
                             tool_uses.append(tool_display)
                             # Heartbeat will pick up the new tool_uses on next tick
 
-                            # Pause for Edit operations - require approval
+                            # Show diff for Edit operations (auto-approved via --allowedTools)
                             if tool_name == "Edit":
-                                stop_heartbeat[0] = True
-                                heartbeat_task.cancel()
-                                stderr_task.cancel()
+                                file_path = tool_input.get("file_path", "")
+                                old_string = tool_input.get("old_string", "")
+                                new_string = tool_input.get("new_string", "")
+                                filename = file_path.split('/')[-1]
+                                edits_made.append(filename)
 
-                                edit_id = str(uuid.uuid4())[:8]
-                                return {
-                                    "status": "pending_approval",
-                                    "edit_id": edit_id,
-                                    "tool_name": "Edit",
-                                    "file_path": tool_input.get("file_path", ""),
-                                    "old_string": tool_input.get("old_string", ""),
-                                    "new_string": tool_input.get("new_string", ""),
-                                    "process": process,
-                                    "session_id": session_id,
-                                    "cwd": cwd,
-                                    "user_id": user_id,
-                                    "status_message": status_message,
-                                }
+                                # Send diff notification to user
+                                try:
+                                    pages = format_diff(old_string, new_string, file_path)
+                                    await context.bot.send_message(
+                                        chat_id=chat_id,
+                                        text=f"✏️ <b>Editing {filename}</b>\n\n<code>{pages[0][:3500]}</code>",
+                                        parse_mode=ParseMode.HTML
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"Failed to send edit notification: {e}")
 
-                            # Pause for Write operations - require approval
+                            # Show content for Write operations (auto-approved via --allowedTools)
                             elif tool_name == "Write":
-                                stop_heartbeat[0] = True
-                                heartbeat_task.cancel()
-                                stderr_task.cancel()
+                                file_path = tool_input.get("file_path", "")
+                                content = tool_input.get("content", "")
+                                filename = file_path.split('/')[-1]
+                                edits_made.append(filename)
 
-                                edit_id = str(uuid.uuid4())[:8]
-                                return {
-                                    "status": "pending_approval",
-                                    "edit_id": edit_id,
-                                    "tool_name": "Write",
-                                    "file_path": tool_input.get("file_path", ""),
-                                    "old_string": "",
-                                    "new_string": tool_input.get("content", ""),
-                                    "process": process,
-                                    "session_id": session_id,
-                                    "cwd": cwd,
-                                    "user_id": user_id,
-                                    "status_message": status_message,
-                                }
+                                # Send new file notification to user
+                                try:
+                                    pages = format_new_file(content, file_path)
+                                    await context.bot.send_message(
+                                        chat_id=chat_id,
+                                        text=f"📝 <b>Creating {filename}</b>\n\n<code>{pages[0][:3500]}</code>",
+                                        parse_mode=ParseMode.HTML
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"Failed to send write notification: {e}")
 
                 elif msg_type == "user":
                     # Tool results - mark last tool as done
@@ -1213,37 +1214,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             resume_id=session.resume_id
         )
 
-        if result["status"] == "pending_approval":
-            # Delete status message
-            try:
-                await status_message.delete()
-            except Exception:
-                pass
-
-            # Show approval request
-            msg_id, pages = await show_approval_request(
-                update.effective_chat.id,
-                context,
-                result
-            )
-
-            # Store pending edit
-            pending_edits[result["edit_id"]] = PendingEdit(
-                edit_id=result["edit_id"],
-                chat_id=update.effective_chat.id,
-                message_id=msg_id,
-                user_id=user_id,
-                tool_name=result["tool_name"],
-                file_path=result["file_path"],
-                old_string=result["old_string"],
-                new_string=result["new_string"],
-                process=result["process"],
-                session_id=result["session_id"],
-                cwd=session.cwd,
-                pages=pages,
-            )
-
-        elif result["status"] == "complete":
+        if result["status"] == "complete":
             # Update session with new resume ID if provided
             if result.get("session_id"):
                 sessions.update(user_id, resume_id=result["session_id"])

@@ -72,37 +72,24 @@ class TestMessageHandling:
         # Check that reply_text was called (once for status, once for response)
         assert mock_update.message.reply_text.call_count >= 1
 
-    async def test_pending_approval_creates_buttons(self, mock_update, mock_context, session_manager):
-        """Edit operations should create approval buttons."""
+    async def test_edit_operations_complete_without_blocking(self, mock_update, mock_context, session_manager):
+        """Edit operations should complete without blocking (auto-approved)."""
         status_msg = MagicMock(edit_text=AsyncMock(), delete=AsyncMock())
         mock_update.message.reply_text = AsyncMock(return_value=status_msg)
-
-        approval_msg = MagicMock()
-        approval_msg.message_id = 12345
-        mock_context.bot.send_message = AsyncMock(return_value=approval_msg)
 
         with patch.object(bot, 'ALLOWED_USER_IDS', []):
             with patch.object(bot, 'sessions', session_manager):
                 with patch.object(bot, 'run_claude_streaming', new_callable=AsyncMock) as mock_stream:
-                    mock_process = MagicMock()
+                    # Edit operations now complete with status="complete"
                     mock_stream.return_value = {
-                        "status": "pending_approval",
-                        "edit_id": "test123",
-                        "tool_name": "Edit",
-                        "file_path": "/test/file.py",
-                        "old_string": "old",
-                        "new_string": "new",
-                        "process": mock_process,
+                        "status": "complete",
+                        "response": "I edited the file for you.",
                         "session_id": "sess-123",
-                        "cwd": "/test",
-                        "user_id": 12345,
                     }
                     await bot.handle_message(mock_update, mock_context)
 
-        # Check that approval message was sent
-        mock_context.bot.send_message.assert_called()
-        call_kwargs = mock_context.bot.send_message.call_args
-        assert call_kwargs[1].get('reply_markup') is not None
+        # Check that reply was sent (not blocked for approval)
+        assert mock_update.message.reply_text.call_count >= 1
 
     async def test_error_response_shown_to_user(self, mock_update, mock_context, session_manager):
         """Error responses should be shown to user."""
