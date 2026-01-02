@@ -290,14 +290,17 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
 
     env = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
 
+    # Don't pipe stdin - Claude CLI doesn't need it and it may cause issues
     process = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        stdin=asyncio.subprocess.PIPE,
+        stdin=asyncio.subprocess.DEVNULL,
         env=env
     )
+
+    logger.info(f"Process started with PID {process.pid}")
 
     full_response = ""
     session_id = None
