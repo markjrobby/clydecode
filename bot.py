@@ -460,38 +460,46 @@ async def run_claude_streaming(
     full_response = ""
     session_id = None
     tool_uses = []
-    last_update = [0.0]  # Use list for mutable in closure
     git_info = get_git_info(cwd)
     edits_made = []  # Track edits for summary
     stop_heartbeat = [False]
     spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     spinner_idx = [0]  # Use list for mutable in closure
+    current_status = ["Thinking..."]  # Current status text to display
+    current_action = [""]  # Current action from Claude's text
 
-    async def update_status(text: str, force: bool = False):
-        """Update the status message with throttling and spinner."""
-        now = asyncio.get_event_loop().time()
-        if force or now - last_update[0] > 1.0:
-            try:
-                # Add spinner to show activity
-                spinner = spinner_frames[spinner_idx[0] % len(spinner_frames)]
-                spinner_idx[0] += 1
-                await status_message.edit_text(
-                    f"<code>{cwd}</code> {git_info}\n\n{spinner} {text}",
-                    parse_mode=ParseMode.HTML
-                )
-                last_update[0] = now
-            except Exception:
-                pass
+    async def update_display():
+        """Update the status message with current spinner and status."""
+        try:
+            spinner = spinner_frames[spinner_idx[0] % len(spinner_frames)]
+            spinner_idx[0] += 1
+
+            # Build status text
+            lines = []
+            if current_action[0]:
+                lines.append(current_action[0])
+            if tool_uses:
+                lines.extend(tool_uses[-5:])
+            else:
+                lines.append(current_status[0])
+
+            status_text = "\n".join(lines)
+            await status_message.edit_text(
+                f"<code>{cwd}</code> {git_info}\n\n{spinner} {status_text}",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
 
     async def heartbeat():
-        """Show progress animation while processing."""
+        """Continuously update spinner every second for visual feedback."""
         phases = ["Thinking...", "Analyzing...", "Processing...", "Reading context..."]
         i = 0
         while not stop_heartbeat[0]:
-            if not tool_uses:  # Only animate if no tool activity yet
-                await update_status(phases[i % len(phases)], force=True)
+            current_status[0] = phases[i % len(phases)]
+            await update_display()
             i += 1
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(1.0)  # Update every second for smooth spinner
 
     # Start heartbeat task
     heartbeat_task = asyncio.create_task(heartbeat())
@@ -548,7 +556,6 @@ async def run_claude_streaming(
                 if msg_type == "assistant":
                     # Assistant text response
                     content = data.get("message", {}).get("content", [])
-                    current_action = ""
                     for block in content:
                         if block.get("type") == "text":
                             full_response = block.get("text", "")
@@ -558,20 +565,13 @@ async def run_claude_streaming(
                                 first_line = text.split('\n')[0].strip()
                                 if len(first_line) > 60:
                                     first_line = first_line[:57] + "..."
-                                current_action = f"● {first_line}"
+                                current_action[0] = f"● {first_line}"
                         elif block.get("type") == "tool_use":
                             tool_name = block.get("name", "")
                             tool_input = block.get("input", {})
                             tool_display = format_tool_use(tool_name, tool_input)
                             tool_uses.append(tool_display)
-
-                            # Update status with action + tools
-                            status_lines = []
-                            if current_action:
-                                status_lines.append(current_action)
-                            # Show last 5 tool uses
-                            status_lines.extend(tool_uses[-5:])
-                            await update_status("\n".join(status_lines), force=True)
+                            # Heartbeat will pick up the new tool_uses on next tick
 
                             # Pause for Edit operations - require approval
                             if tool_name == "Edit":
@@ -623,7 +623,7 @@ async def run_claude_streaming(
                             # Mark the last tool as completed with checkmark
                             if tool_uses and not tool_uses[-1].startswith("✅"):
                                 tool_uses[-1] = "✅ " + tool_uses[-1].lstrip("📖📝✏️💻🔍🔎🌐🚀📋❓🔧 ")
-                                await update_status("\n".join(tool_uses[-5:]))
+                            # Heartbeat will pick up the change on next tick
 
                 elif msg_type == "result":
                     # Final result
