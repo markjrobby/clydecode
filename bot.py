@@ -618,6 +618,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # Handle ResultMessage (final response)
             elif isinstance(message, ResultMessage):
+                logger.info(f"ResultMessage attrs: {dir(message)}")
+                logger.info(f"ResultMessage: {message}")
                 if hasattr(message, 'result') and message.result:
                     full_response = str(message.result)
                 elif hasattr(message, 'text') and message.text:
