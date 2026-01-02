@@ -1048,16 +1048,14 @@ async def handle_approve(query, pending: PendingEdit, context):
 
         if result.get("response"):
             response = redact_sensitive(result["response"])
-            response = html.escape(response)
-            response = truncate_message(response, max_length=3900)
+            response = truncate_message(response)
 
             git_info = get_git_info(pending.cwd)
-            header = f"<code>{html.escape(pending.cwd)}</code> {git_info}\n\n"
+            header = f"{pending.cwd} {git_info}\n\n"
 
             await context.bot.send_message(
                 chat_id=pending.chat_id,
-                text=header + response,
-                parse_mode=ParseMode.HTML
+                text=header + response
             )
             logger.info("Response sent successfully")
         else:
@@ -1230,15 +1228,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response = result.get("response", "")
             if response:
                 response = redact_sensitive(response)
-                response = html.escape(response)
-                response = truncate_message(response, max_length=3900)
+                response = truncate_message(response)
 
-                header = f"<code>{html.escape(session.cwd)}</code> {git_info}\n\n"
+                header = f"{session.cwd} {git_info}\n\n"
 
-                await update.message.reply_text(
-                    header + response,
-                    parse_mode=ParseMode.HTML
-                )
+                await update.message.reply_text(header + response)
             else:
                 await update.message.reply_text("No response from Claude.")
 
