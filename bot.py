@@ -148,6 +148,9 @@ sessions = SessionManager(SESSIONS_FILE)
 # Pending edits awaiting approval: {edit_id: PendingEdit}
 pending_edits: dict[str, PendingEdit] = {}
 
+# Active Claude processes per user: {user_id: process}
+active_processes: dict[int, asyncio.subprocess.Process] = {}
+
 
 def redact_sensitive(text: str) -> str:
     """Redact sensitive information from text before sending to Telegram."""
@@ -464,6 +467,9 @@ async def run_claude_streaming(
         env=env
     )
 
+    # Track process so it can be cancelled
+    active_processes[user_id] = process
+
     full_response = ""
     session_id = None
     tool_uses = []
@@ -655,6 +661,9 @@ async def run_claude_streaming(
 
     await process.wait()
 
+    # Clean up process tracking
+    active_processes.pop(user_id, None)
+
     if process.returncode != 0:
         stderr = await process.stderr.read()
         error_msg = stderr.decode().strip() if stderr else "Unknown error"
@@ -697,7 +706,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/cwd - Show current directory\n"
         "/cwd [path] - Change directory\n"
         "/status - Show bot status\n"
-        "/git [args] - Run git command\n\n"
+        "/git [args] - Run git command\n"
+        "/cancel - Stop running process\n\n"
         "<b>Tips</b>\n"
         "Use /new to reset conversation context.",
         parse_mode=ParseMode.HTML
@@ -797,6 +807,26 @@ async def cmd_git(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Command timed out.")
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
+
+
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /cancel command - kill any running Claude process."""
+    if not is_authorized(update.effective_user.id):
+        return
+
+    user_id = update.effective_user.id
+    process = active_processes.get(user_id)
+
+    if process and process.returncode is None:
+        try:
+            process.kill()
+            await process.wait()
+            active_processes.pop(user_id, None)
+            await update.message.reply_text("Cancelled.")
+        except Exception as e:
+            await update.message.reply_text(f"Failed to cancel: {e}")
+    else:
+        await update.message.reply_text("Nothing to cancel.")
 
 
 async def show_approval_request(chat_id: int, context, edit_info: dict, page: int = 0) -> tuple[int, list[str]]:
@@ -1269,6 +1299,7 @@ def main():
     app.add_handler(CommandHandler("cwd", cmd_cwd))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("git", cmd_git))
+    app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CallbackQueryHandler(handle_edit_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
