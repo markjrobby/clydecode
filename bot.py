@@ -921,24 +921,6 @@ async def handle_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await handle_reject(query, pending, context)
 
 
-async def cleanup_stale_edits():
-    """Kill edits pending for more than 10 minutes."""
-    while True:
-        await asyncio.sleep(60)
-        now = datetime.now()
-        stale = [
-            eid for eid, edit in pending_edits.items()
-            if (now - edit.created_at).total_seconds() > 600
-        ]
-        for edit_id in stale:
-            edit = pending_edits.pop(edit_id, None)
-            if edit:
-                try:
-                    edit.process.kill()
-                    await edit.process.wait()
-                except Exception:
-                    pass
-                logger.info(f"Cleaned up stale edit: {edit_id}")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1050,10 +1032,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Error: {str(e)[:200]}")
 
 
-async def post_init(app: Application):
-    """Run after application initialization."""
-    # Start background cleanup task
-    asyncio.create_task(cleanup_stale_edits())
 
 
 def main():
@@ -1062,7 +1040,7 @@ def main():
         print("Error: TELEGRAM_BOT_TOKEN not set in .env")
         return
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))

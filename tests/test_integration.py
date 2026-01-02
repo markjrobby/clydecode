@@ -7,7 +7,7 @@ Tests interactions between components and with external systems (mocked).
 import asyncio
 import json
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -389,47 +389,3 @@ class TestContinueAfterApproval:
         assert result["file_path"] == "/test/other.py"
 
 
-@pytest.mark.asyncio
-class TestCleanupStaleEdits:
-    """Integration tests for stale edit cleanup."""
-
-    async def test_cleanup_removes_old_edits(self, sample_pending_edit):
-        """Old pending edits should be cleaned up."""
-        # Make the edit old
-        sample_pending_edit.created_at = datetime.now() - timedelta(minutes=15)
-        bot.pending_edits[sample_pending_edit.edit_id] = sample_pending_edit
-
-        # Run one iteration of cleanup (modified to not loop)
-        now = datetime.now()
-        stale = [
-            eid for eid, edit in bot.pending_edits.items()
-            if (now - edit.created_at).total_seconds() > 600
-        ]
-        for edit_id in stale:
-            edit = bot.pending_edits.pop(edit_id, None)
-            if edit:
-                try:
-                    edit.process.kill()
-                    await edit.process.wait()
-                except Exception:
-                    pass
-
-        assert sample_pending_edit.edit_id not in bot.pending_edits
-        sample_pending_edit.process.kill.assert_called()
-
-    async def test_cleanup_keeps_recent_edits(self, sample_pending_edit):
-        """Recent pending edits should not be cleaned up."""
-        sample_pending_edit.created_at = datetime.now()
-        bot.pending_edits[sample_pending_edit.edit_id] = sample_pending_edit
-
-        now = datetime.now()
-        stale = [
-            eid for eid, edit in bot.pending_edits.items()
-            if (now - edit.created_at).total_seconds() > 600
-        ]
-
-        assert len(stale) == 0
-        assert sample_pending_edit.edit_id in bot.pending_edits
-
-        # Cleanup
-        del bot.pending_edits[sample_pending_edit.edit_id]
