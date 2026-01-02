@@ -199,20 +199,20 @@ class TestFormatDiff:
     def test_formats_basic_diff(self):
         result = bot.format_diff("old code", "new code", "/path/to/file.py")
         assert "file.py" in result
-        # Should show removed and added lines with emoji
-        assert "🟥" in result  # Removed
-        assert "🟩" in result  # Added
+        # Should show removed and added lines with +/-
+        assert "- old code" in result
+        assert "+ new code" in result
 
     def test_includes_filename(self):
         result = bot.format_diff("old", "new", "/path/to/myfile.py")
         assert "myfile.py" in result
 
-    def test_shows_context_lines(self):
-        old_code = "line1\nline2\nold line\nline4\nline5"
-        new_code = "line1\nline2\nnew line\nline4\nline5"
+    def test_multiline_diff(self):
+        old_code = "line1\nline2\nline3"
+        new_code = "line1\nmodified\nline3"
         result = bot.format_diff(old_code, new_code, "/file.py")
-        # Should include context lines (line1, line2, line4, line5)
-        assert "line1" in result or "line2" in result
+        assert "- line1" in result
+        assert "+ line1" in result
 
     def test_truncates_long_content(self):
         old_content = "\n".join(f"line {i}" for i in range(500))
@@ -237,12 +237,12 @@ class TestFormatNewFile:
         result = bot.format_new_file("print('hello')", "/path/to/new.py")
         assert "new.py" in result
         assert "(new file)" in result
-        assert "print" in result
+        assert "+ print" in result
 
     def test_truncates_long_content(self):
-        content = "x" * 600
+        content = "\n".join(f"line {i}" for i in range(500))
         result = bot.format_new_file(content, "/file.py")
-        assert "..." in result
+        assert "truncated" in result.lower()
 
     def test_escapes_html(self):
         result = bot.format_new_file("<script>alert('xss')</script>", "/file.py")

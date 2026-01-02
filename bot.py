@@ -274,71 +274,59 @@ def format_tool_use(tool_name: str, tool_input: dict) -> str:
 
 
 def format_diff(old_string: str, new_string: str, file_path: str) -> str:
-    """Format a unified diff with context lines, like Claude Code does."""
-    import difflib
-
+    """Format a clean diff showing removed and added lines."""
     filename = file_path.split('/')[-1]
 
-    old_lines = old_string.splitlines(keepends=True)
-    new_lines = new_string.splitlines(keepends=True)
+    old_lines = old_string.splitlines()
+    new_lines = new_string.splitlines()
 
-    # Generate unified diff with 3 lines of context
-    diff = list(difflib.unified_diff(
-        old_lines,
-        new_lines,
-        fromfile=filename,
-        tofile=filename,
-        lineterm=''
-    ))
-
-    if not diff:
+    # If the strings are identical, no changes
+    if old_string == new_string:
         return f"<b>📄 {filename}</b>\n\n<i>No changes</i>"
 
-    # Format diff lines with colors
     formatted_lines = []
-    for line in diff:
-        line = line.rstrip('\n')
-        if line.startswith('+++') or line.startswith('---'):
-            # File headers - skip them, we show filename separately
-            continue
-        elif line.startswith('@@'):
-            # Hunk header - show in gray/muted
-            formatted_lines.append(f"   {line}")
-        elif line.startswith('-'):
-            # Removed line - red
-            formatted_lines.append(f"🟥 {line[1:]}")
-        elif line.startswith('+'):
-            # Added line - green
-            formatted_lines.append(f"🟩 {line[1:]}")
-        else:
-            # Context line - no prefix, just indent
-            formatted_lines.append(f"   {line[1:] if line.startswith(' ') else line}")
+
+    # Show removed lines (old content)
+    if old_lines:
+        for line in old_lines:
+            formatted_lines.append(f"- {line}")
+
+    # Add separator if both old and new content exist
+    if old_lines and new_lines:
+        formatted_lines.append("")
+
+    # Show added lines (new content)
+    if new_lines:
+        for line in new_lines:
+            formatted_lines.append(f"+ {line}")
 
     diff_content = '\n'.join(formatted_lines)
 
     # Truncate if too long for Telegram
-    max_len = 3000
+    max_len = 2500
     if len(diff_content) > max_len:
         diff_content = diff_content[:max_len] + "\n\n... (truncated)"
 
     diff_text = f"<b>📄 {filename}</b>\n\n"
-    diff_text += f"<pre>{html.escape(diff_content)}</pre>"
+    diff_text += f"<code>{html.escape(diff_content)}</code>"
 
     return diff_text
 
 
 def format_new_file(content: str, file_path: str) -> str:
-    """Format new file preview (all green)."""
+    """Format new file preview."""
     filename = file_path.split('/')[-1]
 
-    max_len = 500
-    display = content[:max_len] + "..." if len(content) > max_len else content
+    max_len = 2500
+    display = content[:max_len]
+    if len(content) > max_len:
+        display += "\n\n... (truncated)"
 
     lines = display.split('\n')
-    formatted = '\n'.join(f"🟩 {line}" for line in lines)
+    formatted = '\n'.join(f"+ {line}" for line in lines)
 
     text = f"<b>📄 {filename}</b> (new file)\n\n"
-    text += f"<pre>{html.escape(formatted)}</pre>"
+    text += f"<code>{html.escape(formatted)}</code>"
 
     return text
 

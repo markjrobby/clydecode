@@ -365,14 +365,12 @@ class TestDiffFormattingRegressions:
         assert result is not None
         assert "truncated" in result.lower()
 
-    def test_unified_diff_format(self):
-        """Ensure unified diff shows context lines."""
-        old_code = "line1\nline2\nold\nline4\nline5"
-        new_code = "line1\nline2\nnew\nline4\nline5"
+    def test_diff_shows_removed_and_added(self):
+        """Ensure diff shows removed and added lines clearly."""
+        old_code = "old line"
+        new_code = "new line"
 
         result = bot.format_diff(old_code, new_code, "/file.py")
-        # Should have context lines around the change
-        assert "line2" in result or "line4" in result
-        # Should have emoji markers
-        assert "🟥" in result
-        assert "🟩" in result
+        # Should have +/- markers
+        assert "- old line" in result
+        assert "+ new line" in result
