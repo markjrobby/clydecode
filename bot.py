@@ -464,14 +464,19 @@ async def run_claude_streaming(
     git_info = get_git_info(cwd)
     edits_made = []  # Track edits for summary
     stop_heartbeat = [False]
+    spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    spinner_idx = [0]  # Use list for mutable in closure
 
     async def update_status(text: str, force: bool = False):
-        """Update the status message with throttling."""
+        """Update the status message with throttling and spinner."""
         now = asyncio.get_event_loop().time()
         if force or now - last_update[0] > 1.0:
             try:
+                # Add spinner to show activity
+                spinner = spinner_frames[spinner_idx[0] % len(spinner_frames)]
+                spinner_idx[0] += 1
                 await status_message.edit_text(
-                    f"<code>{cwd}</code> {git_info}\n\n{text}",
+                    f"<code>{cwd}</code> {git_info}\n\n{spinner} {text}",
                     parse_mode=ParseMode.HTML
                 )
                 last_update[0] = now
@@ -480,13 +485,13 @@ async def run_claude_streaming(
 
     async def heartbeat():
         """Show progress animation while processing."""
-        phases = ["⏳ Analyzing request...", "⏳ Reading context...", "⏳ Processing...", "⏳ Thinking..."]
+        phases = ["Thinking...", "Analyzing...", "Processing...", "Reading context..."]
         i = 0
         while not stop_heartbeat[0]:
             if not tool_uses:  # Only animate if no tool activity yet
                 await update_status(phases[i % len(phases)], force=True)
             i += 1
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
 
     # Start heartbeat task
     heartbeat_task = asyncio.create_task(heartbeat())
