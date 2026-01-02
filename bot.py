@@ -8,6 +8,7 @@ import os
 import re
 import json
 import html
+import shutil
 import asyncio
 import logging
 import subprocess
@@ -277,12 +278,21 @@ async def run_claude_streaming(prompt: str, cwd: str, status_message, context, c
     Returns (response_text, session_id).
     """
     # Use stream-json for real-time updates
-    cmd = ["claude", "-p", prompt, "--output-format", "stream-json"]
+    # --verbose is REQUIRED when using stream-json with -p
+    base_cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
 
     if resume_id:
-        cmd.extend(["--resume", resume_id])
+        base_cmd.extend(["--resume", resume_id])
 
-    logger.info(f"Running Claude in {cwd}: {' '.join(cmd[:4])}")
+    # Use 'script' command to force unbuffered output (works on Linux/Pi)
+    # This tricks the subprocess into thinking it's connected to a terminal
+    if shutil.which("script"):
+        # Linux version of script
+        cmd = ["script", "-q", "-c", " ".join(base_cmd), "/dev/null"]
+    else:
+        cmd = base_cmd
+
+    logger.info(f"Running Claude in {cwd}: {cmd[0]}...{base_cmd[1]}")
 
     env = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
 
