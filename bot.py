@@ -848,10 +848,42 @@ async def show_approval_request(chat_id: int, context, edit_info: dict, page: in
     return msg.message_id, pages
 
 
-async def continue_after_approval(pending: PendingEdit, context) -> dict:
-    """Continue reading Claude output after approval."""
+async def continue_after_approval(pending: PendingEdit, context, status_message) -> dict:
+    """Continue reading Claude output after approval with spinner feedback."""
     full_response = ""
     session_id = pending.session_id
+    tool_uses = []
+    stop_spinner = [False]
+    spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    spinner_idx = [0]
+    current_action = [""]
+    git_info = get_git_info(pending.cwd)
+
+    async def update_spinner():
+        """Update spinner every second."""
+        while not stop_spinner[0]:
+            try:
+                spinner = spinner_frames[spinner_idx[0] % len(spinner_frames)]
+                spinner_idx[0] += 1
+
+                lines = []
+                if current_action[0]:
+                    lines.append(current_action[0])
+                if tool_uses:
+                    lines.extend(tool_uses[-5:])
+                else:
+                    lines.append("Continuing...")
+
+                status_text = "\n".join(lines)
+                await status_message.edit_text(
+                    f"<code>{pending.cwd}</code> {git_info}\n\n{spinner} {status_text}",
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(1.0)
+
+    spinner_task = asyncio.create_task(update_spinner())
 
     try:
         while True:
@@ -880,12 +912,23 @@ async def continue_after_approval(pending: PendingEdit, context) -> dict:
                     elif msg_type == "assistant":
                         content = data.get("message", {}).get("content", [])
                         for block in content:
-                            if block.get("type") == "tool_use":
+                            if block.get("type") == "text":
+                                text = block.get("text", "").strip()
+                                if text:
+                                    first_line = text.split('\n')[0].strip()
+                                    if len(first_line) > 60:
+                                        first_line = first_line[:57] + "..."
+                                    current_action[0] = f"● {first_line}"
+                            elif block.get("type") == "tool_use":
                                 tool_name = block.get("name", "")
                                 tool_input = block.get("input", {})
+                                tool_display = format_tool_use(tool_name, tool_input)
+                                tool_uses.append(tool_display)
 
                                 # Another Edit/Write - need approval again
                                 if tool_name == "Edit":
+                                    stop_spinner[0] = True
+                                    spinner_task.cancel()
                                     edit_id = str(uuid.uuid4())[:8]
                                     return {
                                         "status": "pending_approval",
@@ -900,6 +943,8 @@ async def continue_after_approval(pending: PendingEdit, context) -> dict:
                                         "user_id": pending.user_id,
                                     }
                                 elif tool_name == "Write":
+                                    stop_spinner[0] = True
+                                    spinner_task.cancel()
                                     edit_id = str(uuid.uuid4())[:8]
                                     return {
                                         "status": "pending_approval",
@@ -914,13 +959,25 @@ async def continue_after_approval(pending: PendingEdit, context) -> dict:
                                         "user_id": pending.user_id,
                                     }
 
+                    elif msg_type == "user":
+                        # Tool result - mark as done
+                        content = data.get("message", {}).get("content", [])
+                        for block in content:
+                            if block.get("type") == "tool_result":
+                                if tool_uses and not tool_uses[-1].startswith("✅"):
+                                    tool_uses[-1] = "✅ " + tool_uses[-1].lstrip("📖📝✏️💻🔍🔎🌐🚀📋❓🔧 ")
+
                 except json.JSONDecodeError:
                     continue
 
+        stop_spinner[0] = True
+        spinner_task.cancel()
         await pending.process.wait()
         return {"status": "complete", "response": full_response, "session_id": session_id}
 
     except Exception as e:
+        stop_spinner[0] = True
+        spinner_task.cancel()
         logger.error(f"Error continuing after approval: {e}")
         return {"status": "error", "message": str(e)}
 
@@ -929,16 +986,22 @@ async def handle_approve(query, pending: PendingEdit, context):
     """Handle approval of an edit."""
     filename = pending.file_path.split('/')[-1]
 
-    # Update the diff message to show approval
+    # Update the diff message to show approval (this becomes the status message)
     await query.edit_message_text(
-        f"✅ Approved edit to <b>{filename}</b>\n\nContinuing...",
+        f"✅ Approved edit to <b>{filename}</b>\n\n⠋ Continuing...",
         parse_mode=ParseMode.HTML
     )
 
-    # Continue reading Claude output
-    result = await continue_after_approval(pending, context)
+    # Continue reading Claude output with spinner feedback
+    result = await continue_after_approval(pending, context, query.message)
 
     if result["status"] == "pending_approval":
+        # Delete the status message before showing new approval request
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
         # Another edit needs approval
         msg_id, pages = await show_approval_request(pending.chat_id, context, result)
 
@@ -958,6 +1021,12 @@ async def handle_approve(query, pending: PendingEdit, context):
         )
 
     elif result["status"] == "complete":
+        # Delete the status message
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
         # Update session with new session ID
         if result.get("session_id"):
             sessions.update(pending.user_id, resume_id=result["session_id"])

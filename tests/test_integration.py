@@ -371,7 +371,10 @@ class TestContinueAfterApproval:
             b''  # EOF
         ])
 
-        result = await bot.continue_after_approval(sample_pending_edit, mock_context)
+        # Create mock status message
+        status_message = MagicMock(edit_text=AsyncMock())
+
+        result = await bot.continue_after_approval(sample_pending_edit, mock_context, status_message)
 
         assert result["status"] == "complete"
         assert result["response"] == "All done!"
@@ -386,7 +389,10 @@ class TestContinueAfterApproval:
             b''
         ])
 
-        result = await bot.continue_after_approval(sample_pending_edit, mock_context)
+        # Create mock status message
+        status_message = MagicMock(edit_text=AsyncMock())
+
+        result = await bot.continue_after_approval(sample_pending_edit, mock_context, status_message)
 
         assert result["status"] == "pending_approval"
         assert result["tool_name"] == "Edit"
