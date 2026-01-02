@@ -197,11 +197,11 @@ class TestFormatDiff:
     """Tests for format_diff function."""
 
     def test_formats_basic_diff(self):
-        result = bot.format_diff("old code", "new code", "/path/to/file.py")
+        result = bot.format_diff("old code", "new code", "/nonexistent/file.py")
         assert "file.py" in result
-        # Should show removed and added lines with +/-
-        assert "- old code" in result
-        assert "+ new code" in result
+        # Should show removed and added lines with emoji (no line numbers for nonexistent file)
+        assert "🟥 old code" in result
+        assert "🟩 new code" in result
 
     def test_includes_filename(self):
         result = bot.format_diff("old", "new", "/path/to/myfile.py")
@@ -210,9 +210,9 @@ class TestFormatDiff:
     def test_multiline_diff(self):
         old_code = "line1\nline2\nline3"
         new_code = "line1\nmodified\nline3"
-        result = bot.format_diff(old_code, new_code, "/file.py")
-        assert "- line1" in result
-        assert "+ line1" in result
+        result = bot.format_diff(old_code, new_code, "/nonexistent/file.py")
+        assert "🟥 line1" in result
+        assert "🟩 line1" in result
 
     def test_truncates_long_content(self):
         old_content = "\n".join(f"line {i}" for i in range(500))
@@ -229,6 +229,17 @@ class TestFormatDiff:
         result = bot.format_diff("same content", "same content", "/file.py")
         assert "No changes" in result
 
+    def test_shows_line_numbers_for_existing_file(self, temp_cwd):
+        # Create a test file
+        test_file = Path(temp_cwd) / "test.py"
+        test_file.write_text("line1\nline2\nold_content\nline4\nline5")
+
+        result = bot.format_diff("old_content", "new_content", str(test_file))
+        # Should show line number 3 (where old_content is)
+        assert "3" in result
+        assert "🟥 old_content" in result
+        assert "🟩 new_content" in result
+
 
 class TestFormatNewFile:
     """Tests for format_new_file function."""
@@ -237,7 +248,7 @@ class TestFormatNewFile:
         result = bot.format_new_file("print('hello')", "/path/to/new.py")
         assert "new.py" in result
         assert "(new file)" in result
-        assert "+ print" in result
+        assert "🟩 print" in result
 
     def test_truncates_long_content(self):
         content = "\n".join(f"line {i}" for i in range(500))

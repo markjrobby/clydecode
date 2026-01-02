@@ -371,6 +371,6 @@ class TestDiffFormattingRegressions:
         new_code = "new line"
 
         result = bot.format_diff(old_code, new_code, "/file.py")
-        # Should have +/- markers
-        assert "- old line" in result
-        assert "+ new line" in result
+        # Should have emoji markers
+        assert "🟥 old line" in result
+        assert "🟩 new line" in result

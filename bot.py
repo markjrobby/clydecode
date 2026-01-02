@@ -274,7 +274,7 @@ def format_tool_use(tool_name: str, tool_input: dict) -> str:
 
 
 def format_diff(old_string: str, new_string: str, file_path: str) -> str:
-    """Format a clean diff showing removed and added lines."""
+    """Format a clean diff showing removed and added lines with line numbers."""
     filename = file_path.split('/')[-1]
 
     old_lines = old_string.splitlines()
@@ -284,21 +284,42 @@ def format_diff(old_string: str, new_string: str, file_path: str) -> str:
     if old_string == new_string:
         return f"<b>📄 {filename}</b>\n\n<i>No changes</i>"
 
+    # Try to find line number in actual file
+    start_line = None
+    try:
+        if os.path.exists(file_path):
+            with open(file_path, 'r') as f:
+                file_content = f.read()
+            # Find where old_string starts in the file
+            pos = file_content.find(old_string)
+            if pos != -1:
+                start_line = file_content[:pos].count('\n') + 1
+    except Exception:
+        pass  # If we can't read the file, just skip line numbers
+
     formatted_lines = []
 
-    # Show removed lines (old content)
+    # Show removed lines (old content) with line numbers
     if old_lines:
-        for line in old_lines:
-            formatted_lines.append(f"- {line}")
+        for i, line in enumerate(old_lines):
+            if start_line is not None:
+                line_num = str(start_line + i).rjust(4)
+                formatted_lines.append(f"{line_num} 🟥 {line}")
+            else:
+                formatted_lines.append(f"🟥 {line}")
 
     # Add separator if both old and new content exist
     if old_lines and new_lines:
         formatted_lines.append("")
 
-    # Show added lines (new content)
+    # Show added lines (new content) with line numbers
     if new_lines:
-        for line in new_lines:
-            formatted_lines.append(f"+ {line}")
+        for i, line in enumerate(new_lines):
+            if start_line is not None:
+                line_num = str(start_line + i).rjust(4)
+                formatted_lines.append(f"{line_num} 🟩 {line}")
+            else:
+                formatted_lines.append(f"🟩 {line}")
 
     diff_content = '\n'.join(formatted_lines)
 
@@ -323,7 +344,7 @@ def format_new_file(content: str, file_path: str) -> str:
         display += "\n\n... (truncated)"
 
     lines = display.split('\n')
-    formatted = '\n'.join(f"+ {line}" for line in lines)
+    formatted = '\n'.join(f"🟩 {line}" for line in lines)
 
     text = f"<b>📄 {filename}</b> (new file)\n\n"
     text += f"<code>{html.escape(formatted)}</code>"
