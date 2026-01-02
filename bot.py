@@ -168,34 +168,41 @@ pending_permissions: dict[str, dict] = {}
 
 def markdown_to_html(text: str) -> str:
     """Convert markdown to Telegram HTML format."""
-    # Escape HTML first
-    text = html.escape(text)
-
-    # Preserve code blocks
+    # Preserve code blocks before escaping (extract raw content)
     code_blocks = []
     def save_code_block(match):
         code_blocks.append(match.group(1))
-        return f"__CODE_BLOCK_{len(code_blocks) - 1}__"
+        return f"\x00CODEBLOCK{len(code_blocks) - 1}\x00"
 
     text = re.sub(r"```(?:\w+)?\n?(.*?)```", save_code_block, text, flags=re.DOTALL)
 
-    # Inline code
-    text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+    # Preserve inline code
+    inline_codes = []
+    def save_inline_code(match):
+        inline_codes.append(match.group(1))
+        return f"\x00INLINECODE{len(inline_codes) - 1}\x00"
+
+    text = re.sub(r"`([^`]+)`", save_inline_code, text)
+
+    # Escape HTML
+    text = html.escape(text)
 
     # Bold
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-    text = re.sub(r"__(.+?)__", r"<b>\1</b>", text)
 
     # Italic
     text = re.sub(r"\*(.+?)\*", r"<i>\1</i>", text)
-    text = re.sub(r"_(.+?)_", r"<i>\1</i>", text)
 
     # Strikethrough
     text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text)
 
+    # Restore inline code
+    for i, code in enumerate(inline_codes):
+        text = text.replace(f"\x00INLINECODE{i}\x00", f"<code>{html.escape(code)}</code>")
+
     # Restore code blocks
     for i, block in enumerate(code_blocks):
-        text = text.replace(f"__CODE_BLOCK_{i}__", f"<pre>{block}</pre>")
+        text = text.replace(f"\x00CODEBLOCK{i}\x00", f"<pre>{html.escape(block)}</pre>")
 
     return text
 
