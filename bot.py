@@ -447,7 +447,7 @@ async def run_claude_streaming(
         "--output-format", "stream-json",
         "--verbose",
         "--permission-mode", "acceptEdits",
-        "--allowedTools", "Edit", "Write", "Read", "Glob", "Grep", "Bash", "WebSearch", "WebFetch", "Task", "TodoWrite", "NotebookEdit"
+        "--allowedTools", "Edit", "Write", "Read", "Glob", "Grep", "Bash", "WebSearch", "WebFetch", "Task", "TodoWrite", "NotebookEdit", "mcp__render__*"
     ]
 
     if resume_id:
