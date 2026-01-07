@@ -1,8 +1,12 @@
 # Telegram Claude Bot
+<img width="1024" height="1024" alt="Gemini_Generated_Image_vsats2vsats2vsat" src="https://github.com/user-attachments/assets/0ee79bdf-53bf-428c-9aa4-35d78b59d83c" />
+
 
 A Telegram bot that bridges to Claude Code via the Claude Agent SDK. Run Claude Code from anywhere using Telegram.
 
 Inspired by [droid-telegram-bot](https://github.com/factory-ben/droid-telegram-bot).
+<img width="965" height="654" alt="Screenshot 2026-01-07 at 1 04 54 PM" src="https://github.com/user-attachments/assets/66f10ca2-8915-46e9-92e6-fcc430d3e555" />
+
 
 ## Features
 
@@ -133,3 +137,4 @@ sudo systemctl status telegram-claude
 ## License
 
 MIT
+
